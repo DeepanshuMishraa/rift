@@ -161,6 +161,8 @@ enum ExecuteCommands {
     },
     /// Print layout tree debugging output in the running rift instance
     Debug,
+    /// Pause or resume automatic tiling while keeping virtual workspaces active
+    ToggleTiling,
     /// Serialize and print runtime state
     Serialize,
     /// this command is deprecated, use `rift-cli execute space toggle-activated`
@@ -664,6 +666,9 @@ fn build_execute_request(execute: ExecuteCommands) -> Result<RiftRequest, String
         ExecuteCommands::Debug => {
             CliCommand::Reactor(reactor::Command::Reactor(reactor::ReactorCommand::Debug))
         }
+        ExecuteCommands::ToggleTiling => CliCommand::Reactor(reactor::Command::Reactor(
+            reactor::ReactorCommand::ToggleTiling,
+        )),
         ExecuteCommands::Serialize => {
             CliCommand::Reactor(reactor::Command::Reactor(reactor::ReactorCommand::Serialize))
         }
@@ -1178,6 +1183,18 @@ mod tests {
             serde_json::to_value(request).unwrap(),
             serde_json::json!({
                 "execute_command": { "command": { "config": { "set_animate": true } } }
+            })
+        );
+    }
+
+    #[test]
+    fn toggle_tiling_uses_the_reactor_command() {
+        let request = build_execute_request(ExecuteCommands::ToggleTiling).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "execute_command": { "command": { "reactor": "toggle_tiling" } }
             })
         );
     }

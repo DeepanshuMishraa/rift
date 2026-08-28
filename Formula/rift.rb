@@ -13,8 +13,11 @@ class Rift < Formula
     bin.install libexec / "bin/rift-cli"
     pkgshare.install "rift.default.toml"
 
-    system "codesign", "--force", "-s", "-", "#{bin}/rift"
-    system "codesign", "--force", "-s", "-", "#{bin}/rift-cli"
+    signing_identity = "C8B568E7DF057F0128BB6ACE47CE6CF9032F0A97"
+    system "codesign", "--force", "--timestamp=none", "--sign", signing_identity,
+           "--identifier", "git.acsandmann.rift", "#{bin}/rift"
+    system "codesign", "--force", "--timestamp=none", "--sign", signing_identity,
+           "--identifier", "git.acsandmann.rift.cli", "#{bin}/rift-cli"
   end
 
   def caveats
