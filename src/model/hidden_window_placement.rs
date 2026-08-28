@@ -69,8 +69,14 @@ impl HiddenWindowPlacement {
                 let visible_height = (window.max().y.min(screen.max().y)
                     - window.origin.y.max(screen.origin.y))
                 .max(0.0);
+                // A window whose on-screen intersection is a sliver along EITHER
+                // axis is effectively invisible. macOS clamps parked windows
+                // above the Dock (e.g. a 1px-wide × 32px-tall sliver at the
+                // bottom-right corner), so requiring BOTH axes to be slivers
+                // would misclassify parked windows as visible and let their
+                // off-screen frames corrupt the paused-position restore cache.
                 visible_width <= Self::VISIBLE_THRESHOLD_PX
-                    && visible_height <= Self::VISIBLE_THRESHOLD_PX
+                    || visible_height <= Self::VISIBLE_THRESHOLD_PX
             }
     }
 }
@@ -106,5 +112,25 @@ mod tests {
             &[rect(1000.0, 0.0, 1000.0, 800.0)],
         );
         assert_eq!(hidden.origin.x, -199.0);
+    }
+
+    #[test]
+    fn dock_clamped_parked_window_is_hidden() {
+        // macOS clamps a window parked at the bottom-right corner above the
+        // Dock, leaving a 1px-wide but ~32px-tall sliver on screen. That is
+        // still an invisible parked window and must not be treated as visible,
+        // or the parked frame corrupts the paused-position restore cache.
+        let screen = rect(0.0, 0.0, 1470.0, 956.0);
+        let parked = rect(1469.0, 924.0, 706.0, 914.0);
+        assert!(HiddenWindowPlacement::is_hidden(screen, parked, &[]));
+    }
+
+    #[test]
+    fn partially_visible_window_is_not_hidden() {
+        // A window dragged mostly below the screen but still showing a wide
+        // strip remains visible.
+        let screen = rect(0.0, 0.0, 1470.0, 956.0);
+        let visible = rect(8.0, 700.0, 706.0, 914.0);
+        assert!(!HiddenWindowPlacement::is_hidden(screen, visible, &[]));
     }
 }

@@ -135,7 +135,9 @@ pub fn handle_command_layout(
 
     // Parking a window off-screen can make macOS treat it as hidden. When
     // paused tiling switches back to a workspace, explicitly raise every
-    // window in that workspace so the restored frames become visible again.
+    // window in that workspace so the restored frames become visible again,
+    // and resynchronize the cached visible/hidden state so restore is the
+    // mirror image of the parked-window preservation.
     if tiling_paused
         && is_workspace_switch
         && response.changed
@@ -144,6 +146,12 @@ pub fn handle_command_layout(
         response.raise_windows = layout
             .layout_engine
             .windows_in_active_workspace(&state.windows, space);
+        for window in &response.raise_windows {
+            if let Some(wsid) = state.windows.window(*window).and_then(|window| window.info.sys_id)
+            {
+                state.windows.mark_window_visible(wsid);
+            }
+        }
     }
 
     if is_virtual_workspace_command && !response.changed {

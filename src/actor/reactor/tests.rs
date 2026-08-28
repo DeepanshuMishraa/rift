@@ -128,6 +128,167 @@ fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
 }
 
 #[test]
+fn paused_tiling_round_trip_restores_windows_visibility_and_raise() {
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let (raise_manager_tx, mut raise_manager_rx) = actor::channel();
+    reactor.communication_manager.raise_manager_tx = raise_manager_tx;
+
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let original_frames: Vec<_> = [WindowId::new(1, 1), WindowId::new(1, 2)]
+        .into_iter()
+        .map(|wid| reactor.state.windows.window(wid).unwrap().frame_monotonic)
+        .collect();
+    while raise_manager_rx.try_recv().is_ok() {}
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.layout_manager.layout_engine.commit_workspace_focus(
+        &mut reactor.state.windows,
+        space,
+        None,
+    );
+
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
+    apps.simulate_until_quiet(&mut reactor);
+    while raise_manager_rx.try_recv().is_ok() {}
+
+    for wid in [WindowId::new(1, 1), WindowId::new(1, 2)] {
+        let wsid = reactor.test_window_server_id(wid);
+        crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+        window_server_destroyed(&mut reactor, wsid, space, SpaceEventKind::User);
+        crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+        assert!(
+            !reactor.state.windows.is_window_visible(wsid),
+            "parked window should be reported hidden by the window server"
+        );
+    }
+    apps.simulate_until_quiet(&mut reactor);
+
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
+    apps.simulate_until_quiet(&mut reactor);
+
+    for (idx, wid) in [WindowId::new(1, 1), WindowId::new(1, 2)].into_iter().enumerate() {
+        assert_eq!(
+            reactor.state.windows.window(wid).unwrap().frame_monotonic,
+            original_frames[idx],
+            "paused workspace round trip must restore the visible frame"
+        );
+        assert_eq!(
+            apps.windows.get(&wid).unwrap().frame,
+            original_frames[idx],
+            "the physical window must be moved back to its visible frame"
+        );
+    }
+    let msg = raise_manager_rx
+        .try_recv()
+        .expect("switching back to a paused workspace must raise its windows");
+    match msg.1 {
+        raise_manager::Event::RaiseRequest(RaiseRequest { raise_windows, .. }) => {
+            let raised: HashSet<WindowId> = raise_windows.into_iter().flatten().collect();
+            let expected: HashSet<WindowId> =
+                [WindowId::new(1, 1), WindowId::new(1, 2)].into_iter().collect();
+            assert_eq!(raised, expected);
+        }
+        other => panic!("expected raise request, got {other:?}"),
+    }
+    for wid in [WindowId::new(1, 1), WindowId::new(1, 2)] {
+        let wsid = reactor.test_window_server_id(wid);
+        assert!(
+            reactor.state.windows.is_window_visible(wsid),
+            "restored paused workspace windows must be visible"
+        );
+    }
+}
+
+#[test]
+fn paused_tiling_restores_destination_workspace_windows_to_visible_frames() {
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.layout_manager.layout_engine.commit_workspace_focus(
+        &mut reactor.state.windows,
+        space,
+        None,
+    );
+    let stays = WindowId::new(1, 1);
+    let parked_before_pause = WindowId::new(1, 2);
+
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: Some(2),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(
+        !reactor
+            .layout_manager
+            .layout_engine
+            .is_window_in_active_workspace(&reactor.state.windows, space, parked_before_pause),
+        "window should have been moved out of the active workspace"
+    );
+    let parked_frame = reactor.state.windows.window(parked_before_pause).unwrap().frame_monotonic;
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .is_hidden_position_multi(&screen, &parked_frame, None, &[screen]),
+        "window moved out of the active workspace must be parked off-screen"
+    );
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.layout_manager.layout_engine.commit_workspace_focus(
+        &mut reactor.state.windows,
+        space,
+        None,
+    );
+
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let restored = reactor.state.windows.window(parked_before_pause).unwrap().frame_monotonic;
+    assert!(
+        !reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .is_hidden_position_multi(&screen, &restored, None, &[screen]),
+        "switching to the destination workspace while paused must restore its window on screen"
+    );
+    assert_ne!(
+        restored,
+        parked_frame,
+        "restored frame must not be the parked off-screen frame"
+    );
+    assert!(reactor
+        .state
+        .windows
+        .is_window_visible(reactor.test_window_server_id(parked_before_pause)));
+
+    let wsid = reactor.test_window_server_id(stays);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+    window_server_destroyed(&mut reactor, wsid, space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+    assert!(
+        !reactor.state.windows.is_window_visible(wsid),
+        "parked paused-workspace window should be reported hidden"
+    );
+
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(
+        reactor.state.windows.is_window_visible(wsid),
+        "switching back restores the parked window's visible state"
+    );
+}
+
+#[test]
 fn config_reload_propagates_non_keybinding_changes_to_wm_controller() {
     let mut reactor = test_reactor();
     let (wm_tx, mut wm_rx) = actor::channel();

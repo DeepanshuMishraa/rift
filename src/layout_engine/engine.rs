@@ -2316,11 +2316,20 @@ impl LayoutEngine {
                         .visible_windows_in_layout(layout)
                         .into_iter()
                         .filter_map(|wid| {
-                            self.paused_tiled_positions
+                            let frame = self
+                                .paused_tiled_positions
                                 .get(&(space, wid))
                                 .copied()
-                                .or_else(|| get_window_frame(wid))
-                                .map(|frame| (wid, frame))
+                                .or_else(|| get_window_frame(wid));
+                            tracing::trace!(
+                                ?space,
+                                ?wid,
+                                ?frame,
+                                paused_stored =
+                                    self.paused_tiled_positions.contains_key(&(space, wid)),
+                                "preserve_tiled_frames: restore position for window"
+                            );
+                            frame.map(|frame| (wid, frame))
                         })
                         .collect()
                 } else {
@@ -2416,6 +2425,24 @@ impl LayoutEngine {
                 .get(&(space, wid))
                 .copied()
                 .or_else(|| get_window_frame(wid));
+
+            // Remember the last visible frame while parking a tiled window.
+            // A later paused workspace switch restores windows from these
+            // positions, so without this record they would fall back to the
+            // off-screen parking frame and stay invisible on their own
+            // workspace.
+            if !self.floating.is_floating(wid)
+                && let Some(frame) = original_frame.filter(|frame| {
+                    !self.virtual_workspace_manager.is_hidden_position_multi(
+                        &screen,
+                        frame,
+                        self.get_app_bundle_id_for_window(wid).as_deref(),
+                        all_screens,
+                    )
+                })
+            {
+                self.paused_tiled_positions.entry((space, wid)).or_insert(frame);
+            }
 
             if self.floating.is_floating(wid) {
                 if let Some(workspace_id) =
@@ -3132,13 +3159,19 @@ impl LayoutEngine {
             return;
         };
         let windows = self.workspace_tree(workspace_id).visible_windows_in_layout(layout);
+        tracing::trace!(?space, ?workspace_id, count = windows.len(), "store_paused_tiled_positions");
         for window_id in windows {
             if self.floating.is_floating(window_id) {
                 continue;
             }
             if let Some(frame) = window_store.window(window_id).map(|window| window.frame_monotonic)
             {
-                self.paused_tiled_positions.insert((space, window_id), frame);
+                // The workspace-switch request may race the acknowledgement for
+                // the preceding parking write. Keep the visible snapshot taken
+                // when tiling was paused instead of replacing it with that
+                // off-screen acknowledgement. Normal window-move events refresh
+                // the cache through `store_visible_paused_tiled_positions`.
+                self.paused_tiled_positions.entry((space, window_id)).or_insert(frame);
             }
         }
     }
@@ -3152,13 +3185,12 @@ impl LayoutEngine {
         screen: CGRect,
         all_screens: &[CGRect],
     ) {
-        let Some(workspace_id) = self.virtual_workspace_manager.active_workspace(space) else {
-            return;
-        };
-        let Some(layout) = self.workspace_layouts.active(space, workspace_id) else {
-            return;
-        };
-        let windows = self.workspace_tree(workspace_id).visible_windows_in_layout(layout);
+        // Workspace membership is authoritative here. A window can temporarily
+        // be absent from the active layout tree while focus/discovery events are
+        // settling, but it still needs a visible restore position before any
+        // inactive-workspace windows are parked.
+        let windows =
+            self.virtual_workspace_manager.windows_in_active_workspace(window_store, space);
         for window_id in windows {
             if self.floating.is_floating(window_id) {
                 continue;
@@ -3174,6 +3206,7 @@ impl LayoutEngine {
                 bundle_id.as_deref(),
                 all_screens,
             ) {
+                tracing::trace!(?space, ?window_id, ?frame, "store_visible_paused: recording");
                 self.paused_tiled_positions.insert((space, window_id), frame);
             }
         }

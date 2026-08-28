@@ -158,6 +158,26 @@ pub fn handle_window_server_destroyed(
 
         return Ok(outcome);
     } else if matches!(kind, SpaceEventKind::User) {
+        // Deliberately parked paused-workspace windows are reported ordered-out
+        // by the WindowServer, and a live space query can disagree with the
+        // workspace assignment (or return a transient native space). Preserve
+        // the parked assignment before any resolved-space reassignment, or the
+        // window would be torn out of its workspace and switching back to it
+        // would restore nothing.
+        if let Some(wid) = state.windows.tracked_window_id(wsid)
+            && preserve_parked_window
+        {
+            state.windows.set_window_server_space(wsid, Some(sid));
+            state.windows.mark_window_hidden(wsid);
+            debug!(
+                ?wid,
+                ?wsid,
+                reported_space = ?sid,
+                "Preserving intentionally parked paused-workspace window"
+            );
+            return Ok(outcome);
+        }
+
         if resolved_space.is_some_and(|space| space != sid) {
             let current_space = resolved_space.expect("checked above");
             state.windows.set_window_server_space(wsid, Some(current_space));
@@ -181,18 +201,6 @@ pub fn handle_window_server_destroyed(
         }
 
         if let Some(wid) = state.windows.tracked_window_id(wsid) {
-            if preserve_parked_window {
-                state.windows.set_window_server_space(wsid, Some(sid));
-                state.windows.mark_window_hidden(wsid);
-                debug!(
-                    ?wid,
-                    ?wsid,
-                    reported_space = ?sid,
-                    "Preserving intentionally parked paused-workspace window"
-                );
-                return Ok(outcome);
-            }
-
             if matches!(ordered_in, Some(false)) {
                 // since the connection has dropped it wont be shown in space_windows_list
                 // so ordered in can be authorative because it doesnt consider
