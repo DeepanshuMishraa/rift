@@ -270,6 +270,12 @@ pub fn service_uninstall() -> io::Result<()> {
 }
 
 pub fn service_start() -> io::Result<()> {
+    if !crate::sys::accessibility::request_accessibility_permission() {
+        eprintln!(
+            "Rift Accessibility permission is required. Enable Rift in System Settings, then run `rift start` again."
+        );
+    }
+
     let plist_path = plist_path()?;
     if !plist_path.is_file() {
         service_install_internal(&plist_path).map_err(|e| {
@@ -341,6 +347,12 @@ pub fn service_start() -> io::Result<()> {
 }
 
 pub fn service_restart() -> io::Result<()> {
+    if !crate::sys::accessibility::request_accessibility_permission() {
+        eprintln!(
+            "Rift Accessibility permission is required. Enable Rift in System Settings, then run `rift restart` again."
+        );
+    }
+
     let plist_path = plist_path()?;
     if !plist_path.is_file() {
         return Err(io::Error::new(
