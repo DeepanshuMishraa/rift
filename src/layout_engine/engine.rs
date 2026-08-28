@@ -2642,10 +2642,44 @@ impl LayoutEngine {
                         None => return EventResponse::default(),
                     }
                 } else {
-                    match self.focused_window {
-                        Some(wid) => wid,
-                        None => return EventResponse::default(),
-                    }
+                    let active_workspace =
+                        self.virtual_workspace_manager.active_workspace(space);
+                    let Some(focused_window) = self
+                        .focused_window
+                        .filter(|wid| {
+                            active_workspace.is_some_and(|workspace_id| {
+                                self.virtual_workspace_manager.workspace_for_window(
+                                    window_store,
+                                    space,
+                                    *wid,
+                                ) == Some(workspace_id)
+                            })
+                        })
+                        .or_else(|| {
+                            active_workspace.and_then(|workspace_id| {
+                                self.virtual_workspace_manager
+                                    .last_focused_window(space, workspace_id)
+                            })
+                        })
+                        .or_else(|| {
+                            active_workspace.and_then(|workspace_id| {
+                                self.workspace_layouts
+                                    .active(space, workspace_id)
+                                    .and_then(|layout| {
+                                        self.workspace_tree(workspace_id).selected_window(layout)
+                                    })
+                            })
+                        })
+                        .or_else(|| {
+                            self.virtual_workspace_manager
+                                .windows_in_active_workspace(window_store, space)
+                                .into_iter()
+                                .next()
+                        })
+                    else {
+                        return EventResponse::default();
+                    };
+                    focused_window
                 };
 
                 let inferred_space = self.space_with_window(focused_window);

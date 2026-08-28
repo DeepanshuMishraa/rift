@@ -90,6 +90,11 @@ fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
 
     reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
     apps.simulate_until_quiet(&mut reactor);
+    reactor.layout_manager.layout_engine.commit_workspace_focus(
+        &mut reactor.state.windows,
+        space,
+        None,
+    );
     reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
         workspace: WorkspaceSelector::Index(1),
         follow: false,
