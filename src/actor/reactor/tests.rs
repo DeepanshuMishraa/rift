@@ -77,6 +77,44 @@ fn toggling_tiling_preserves_virtual_workspace_navigation() {
 }
 
 #[test]
+fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let original_frames: Vec<_> = [WindowId::new(1, 1), WindowId::new(1, 2)]
+        .into_iter()
+        .map(|wid| reactor.state.windows.window(wid).unwrap().frame_monotonic)
+        .collect();
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: Some(2),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(
+        reactor.state.windows.window(WindowId::new(1, 2)).unwrap().frame_monotonic,
+        original_frames[1],
+        "moving a window to another virtual workspace must preserve its paused frame"
+    );
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let restored_frames: Vec<_> = [WindowId::new(1, 1)]
+        .into_iter()
+        .map(|wid| reactor.state.windows.window(wid).unwrap().frame_monotonic)
+        .collect();
+    assert_eq!(restored_frames, vec![original_frames[0]]);
+    assert_eq!(reactor.query_metrics()["tiling_paused"], true);
+}
+
+#[test]
 fn config_reload_propagates_non_keybinding_changes_to_wm_controller() {
     let mut reactor = test_reactor();
     let (wm_tx, mut wm_rx) = actor::channel();

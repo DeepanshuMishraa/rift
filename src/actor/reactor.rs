@@ -1745,6 +1745,7 @@ impl Reactor {
                         command_space,
                         visible_spaces,
                         visible_space_centers,
+                        tiling_paused: self.tiling_paused,
                     },
                 );
             }

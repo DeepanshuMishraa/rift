@@ -152,6 +152,10 @@ pub struct LayoutEngine {
     app_rules: AppRuleEngine,
     focused_window: Option<WindowId>,
     window_layout_constraints: HashMap<WindowId, WindowLayoutConstraints>,
+    /// Last visible frames for tiled windows while global tiling is paused.
+    /// Inactive virtual-workspace windows are parked off-screen, so their
+    /// current frame cannot be used to restore the visible layout.
+    paused_tiled_positions: HashMap<(SpaceId, WindowId), CGRect>,
     virtual_workspace_manager: WorkspaceStore,
     layout_settings: LayoutSettings,
     broadcast_tx: Option<BroadcastSender>,
@@ -1050,6 +1054,7 @@ impl LayoutEngine {
             self.focused_window = None;
         }
         self.window_layout_constraints.remove(&wid);
+        self.paused_tiled_positions.retain(|(_, window), _| *window != wid);
 
         if let Some(space) = removal.active_space {
             self.broadcast_windows_changed(window_store, space);
@@ -1304,6 +1309,14 @@ impl LayoutEngine {
         self.workspace_layouts.remap_space(old_space, new_space);
         self.floating.remap_space(old_space, new_space);
         self.floating_positions.remap_space(old_space, new_space);
+        let paused_positions = std::mem::take(&mut self.paused_tiled_positions);
+        self.paused_tiled_positions = paused_positions
+            .into_iter()
+            .map(|((space, window), frame)| {
+                let space = if space == old_space { new_space } else { space };
+                ((space, window), frame)
+            })
+            .collect();
         self.virtual_workspace_manager.remap_space(window_store, old_space, new_space);
 
         if let Some(uuid) = self.space_display_map.remove(&old_space) {
@@ -1342,6 +1355,7 @@ impl LayoutEngine {
             app_rules: AppRuleEngine::new(&virtual_workspace_config.app_rules),
             focused_window: None,
             window_layout_constraints: HashMap::default(),
+            paused_tiled_positions: HashMap::default(),
             virtual_workspace_manager,
             layout_settings: layout_settings.clone(),
             broadcast_tx,
@@ -2301,7 +2315,13 @@ impl LayoutEngine {
                     self.workspace_tree(active_workspace_id)
                         .visible_windows_in_layout(layout)
                         .into_iter()
-                        .filter_map(|wid| get_window_frame(wid).map(|frame| (wid, frame)))
+                        .filter_map(|wid| {
+                            self.paused_tiled_positions
+                                .get(&(space, wid))
+                                .copied()
+                                .or_else(|| get_window_frame(wid))
+                                .map(|frame| (wid, frame))
+                        })
                         .collect()
                 } else {
                     self.workspace_tree(active_workspace_id).calculate_layout(
@@ -3064,6 +3084,63 @@ impl LayoutEngine {
         self.floating.is_floating(window_id)
     }
 
+    /// Remember the currently visible tiled frames before a virtual
+    /// workspace command changes which workspace is active.
+    pub fn store_paused_tiled_positions(&mut self, window_store: &WindowStore, space: SpaceId) {
+        let Some(workspace_id) = self.virtual_workspace_manager.active_workspace(space) else {
+            return;
+        };
+        let Some(layout) = self.workspace_layouts.active(space, workspace_id) else {
+            return;
+        };
+        let windows = self.workspace_tree(workspace_id).visible_windows_in_layout(layout);
+        for window_id in windows {
+            if self.floating.is_floating(window_id) {
+                continue;
+            }
+            if let Some(frame) = window_store.window(window_id).map(|window| window.frame_monotonic)
+            {
+                self.paused_tiled_positions.insert((space, window_id), frame);
+            }
+        }
+    }
+
+    /// Refresh remembered tiled frames without replacing them with the
+    /// off-screen frame used to hide inactive-workspace windows.
+    pub fn store_visible_paused_tiled_positions(
+        &mut self,
+        window_store: &WindowStore,
+        space: SpaceId,
+        screen: CGRect,
+        all_screens: &[CGRect],
+    ) {
+        let Some(workspace_id) = self.virtual_workspace_manager.active_workspace(space) else {
+            return;
+        };
+        let Some(layout) = self.workspace_layouts.active(space, workspace_id) else {
+            return;
+        };
+        let windows = self.workspace_tree(workspace_id).visible_windows_in_layout(layout);
+        for window_id in windows {
+            if self.floating.is_floating(window_id) {
+                continue;
+            }
+            let Some(window) = window_store.window(window_id) else {
+                continue;
+            };
+            let frame = window.frame_monotonic;
+            let bundle_id = self.get_app_bundle_id_for_window(window_id);
+            if !self.virtual_workspace_manager.is_hidden_position_multi(
+                &screen,
+                &frame,
+                bundle_id.as_deref(),
+                all_screens,
+            ) {
+                self.paused_tiled_positions.insert((space, window_id), frame);
+            }
+        }
+    }
+
     pub fn store_floating_position(
         &mut self,
         space: SpaceId,
@@ -3120,6 +3197,14 @@ impl LayoutEngine {
         self.virtual_workspace_manager.transfer_window_identity(from, to);
         self.floating_positions.transfer_window_identity(from, to);
         self.floating.transfer_window_identity(from, to);
+        let paused_positions = std::mem::take(&mut self.paused_tiled_positions);
+        self.paused_tiled_positions = paused_positions
+            .into_iter()
+            .map(|((space, window), frame)| {
+                let window = if window == from { to } else { window };
+                ((space, window), frame)
+            })
+            .collect();
         self.transfer_persisted_window_identity(from, to);
         if let Some(constraints) = self.window_layout_constraints.remove(&from) {
             self.window_layout_constraints.insert(to, constraints);

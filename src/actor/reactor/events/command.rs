@@ -26,6 +26,7 @@ pub struct LayoutCommandPayload {
     pub command_space: Option<SpaceId>,
     pub visible_spaces: Vec<SpaceId>,
     pub visible_space_centers: HashMap<SpaceId, objc2_core_foundation::CGPoint>,
+    pub tiling_paused: bool,
 }
 
 pub fn handle_command_layout(
@@ -39,6 +40,7 @@ pub fn handle_command_layout(
         command_space,
         visible_spaces,
         visible_space_centers,
+        tiling_paused,
     } = payload;
     info!(?cmd);
     let is_workspace_switch = matches!(
@@ -69,10 +71,15 @@ pub fn handle_command_layout(
             | LayoutCommand::CreateWorkspace
             | LayoutCommand::SwitchToLastWorkspace
     );
-    let workspace_space = if requires_workspace_space {
-        if let Some(space) = command_space {
-            store_current_floating_positions(state, layout, space);
+    if is_virtual_workspace_command
+        && let Some(space) = command_space
+    {
+        store_current_floating_positions(state, layout, space);
+        if tiling_paused {
+            layout.layout_engine.store_paused_tiled_positions(&state.windows, space);
         }
+    }
+    let workspace_space = if requires_workspace_space {
         command_space
     } else {
         None

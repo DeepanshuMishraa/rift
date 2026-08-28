@@ -251,6 +251,17 @@ impl LayoutManager {
                 .layout_manager
                 .layout_engine
                 .update_space_display(space, display_uuid_opt.clone());
+            if tiling_paused {
+                reactor
+                    .layout_manager
+                    .layout_engine
+                    .store_visible_paused_tiled_positions(
+                        &reactor.state.windows,
+                        space,
+                        screen.frame,
+                        &all_screen_frames,
+                    );
+            }
             let mut layout = if tiling_paused {
                 reactor
                     .layout_manager
