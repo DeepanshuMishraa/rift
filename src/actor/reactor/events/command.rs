@@ -90,7 +90,7 @@ pub fn handle_command_layout(
         workspace_switch.mark_workspace_switch_inactive();
     }
 
-    let response = match &cmd {
+    let mut response = match &cmd {
         LayoutCommand::NextWorkspace(_)
         | LayoutCommand::PrevWorkspace(_)
         | LayoutCommand::SwitchToWorkspace(_)
@@ -132,6 +132,19 @@ pub fn handle_command_layout(
             )
         }
     };
+
+    // Parking a window off-screen can make macOS treat it as hidden. When
+    // paused tiling switches back to a workspace, explicitly raise every
+    // window in that workspace so the restored frames become visible again.
+    if tiling_paused
+        && is_workspace_switch
+        && response.changed
+        && let Some(space) = workspace_space
+    {
+        response.raise_windows = layout
+            .layout_engine
+            .windows_in_active_workspace(&state.windows, space);
+    }
 
     if is_virtual_workspace_command && !response.changed {
         return Ok(EventOutcome::no_change());
