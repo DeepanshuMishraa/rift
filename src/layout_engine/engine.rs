@@ -2411,7 +2411,11 @@ impl LayoutEngine {
             .virtual_workspace_manager
             .windows_in_inactive_workspaces(window_store, space);
         for wid in hidden_windows {
-            let original_frame = get_window_frame(wid);
+            let original_frame = self
+                .paused_tiled_positions
+                .get(&(space, wid))
+                .copied()
+                .or_else(|| get_window_frame(wid));
 
             if self.floating.is_floating(wid) {
                 if let Some(workspace_id) =
