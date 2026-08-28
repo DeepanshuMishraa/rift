@@ -29,6 +29,17 @@ mod SpaceEventHandler {
         let tracked_window = reactor.state.windows.tracked_window_id(wsid);
         let assigned_space =
             tracked_window.and_then(|window| reactor.assigned_space_for_window_id(window));
+        let preserve_parked_window = tracked_window.is_some_and(|window| {
+            reactor.tiling_paused
+                && assigned_space.is_some_and(|space| reactor.is_space_active(space))
+                && assigned_space.is_some_and(|space| {
+                    !reactor.layout_manager.layout_engine.is_window_in_active_workspace(
+                        &reactor.state.windows,
+                        space,
+                        window,
+                    )
+                })
+        });
         let observations = super::events::space::WindowServerDestroyedObservations {
             resolved_space: reactor.resolve_native_space(wsid, None),
             active_spaces: reactor.active_spaces.clone(),
@@ -39,6 +50,7 @@ mod SpaceEventHandler {
                 tracked_window.and_then(|window| reactor.best_space_for_window_id(window)),
                 reactor.space_state.iter_known_spaces().next(),
             ),
+            preserve_parked_window,
         };
         let outcome = super::events::space::handle_window_server_destroyed(
             &mut reactor.state,
@@ -596,7 +608,7 @@ impl Reactor {
 
     fn refresh_window_server_snapshot_for_active_spaces(&mut self) {
         let active_windows = self.authoritative_active_space_windows();
-        self.reconcile_authoritative_active_window_snapshot(active_windows, false);
+        self.reconcile_authoritative_active_window_snapshot(active_windows, self.tiling_paused);
     }
 
     fn authoritative_active_space_windows(&self) -> Vec<(WindowServerId, Option<SpaceId>)> {
@@ -1227,6 +1239,17 @@ impl Reactor {
                 let tracked_window = self.state.windows.tracked_window_id(wsid);
                 let assigned_space =
                     tracked_window.and_then(|window| self.assigned_space_for_window_id(window));
+                let preserve_parked_window = tracked_window.is_some_and(|window| {
+                    self.tiling_paused
+                        && assigned_space.is_some_and(|space| self.is_space_active(space))
+                        && assigned_space.is_some_and(|space| {
+                            !self.layout_manager.layout_engine.is_window_in_active_workspace(
+                                &self.state.windows,
+                                space,
+                                window,
+                            )
+                        })
+                });
                 let last_known_user_space = topology_workflow::resolve_last_known_user_space(
                     tracked_window.and_then(|window| self.best_space_for_window_id(window)),
                     self.space_state.iter_known_spaces().next(),
@@ -1238,6 +1261,7 @@ impl Reactor {
                     ordered_in: window_server::window_ordered_in(wsid),
                     assigned_space,
                     last_known_user_space,
+                    preserve_parked_window,
                 };
                 return topology_workflow::handle_window_server_destroyed(
                     &mut self.state,
@@ -2678,6 +2702,25 @@ impl Reactor {
             ),
             mission_control_active: self.is_mission_control_active(),
             drag_active: self.is_in_drag(),
+            preserve_windows: self
+                .state
+                .windows
+                .iter_windows()
+                .filter_map(|(wid, _)| {
+                    (self.tiling_paused
+                        && self
+                            .assigned_space_for_window_id(wid)
+                            .is_some_and(|space| {
+                                self.is_space_active(space)
+                                    && !self.layout_manager.layout_engine.is_window_in_active_workspace(
+                                        &self.state.windows,
+                                        space,
+                                        wid,
+                                    )
+                            }))
+                    .then_some(wid)
+                })
+                .collect(),
             inactive_windows,
             server_observations,
         };

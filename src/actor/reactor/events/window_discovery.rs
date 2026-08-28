@@ -150,6 +150,7 @@ pub(crate) struct StaleCleanupSnapshot {
     pub(crate) suppressed: bool,
     pub(crate) mission_control_active: bool,
     pub(crate) drag_active: bool,
+    pub(crate) preserve_windows: HashSet<WindowId>,
     pub(crate) inactive_windows: HashSet<WindowId>,
     pub(crate) server_observations: HashMap<WindowServerId, StaleWindowObservation>,
 }
@@ -211,6 +212,14 @@ pub(crate) fn identify_stale_windows(
                     ?wid,
                     ws_id = ?ws_id,
                     "Skipping stale cleanup; window is on a known inactive space"
+                );
+                return None;
+            }
+
+            if snapshot.preserve_windows.contains(&wid) {
+                trace!(
+                    ?wid,
+                    "Skipping stale cleanup for intentionally parked paused-workspace window"
                 );
                 return None;
             }

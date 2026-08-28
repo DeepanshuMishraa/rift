@@ -86,6 +86,7 @@ pub struct WindowServerDestroyedObservations {
     pub ordered_in: Option<bool>,
     pub assigned_space: Option<SpaceId>,
     pub last_known_user_space: Option<SpaceId>,
+    pub preserve_parked_window: bool,
 }
 
 #[derive(Debug)]
@@ -119,6 +120,7 @@ pub fn handle_window_server_destroyed(
         ordered_in,
         assigned_space,
         last_known_user_space,
+        preserve_parked_window,
     } = observations;
     let mut outcome = EventOutcome::default();
     if matches!(kind, SpaceEventKind::Fullscreen) {
@@ -179,6 +181,18 @@ pub fn handle_window_server_destroyed(
         }
 
         if let Some(wid) = state.windows.tracked_window_id(wsid) {
+            if preserve_parked_window {
+                state.windows.set_window_server_space(wsid, Some(sid));
+                state.windows.mark_window_hidden(wsid);
+                debug!(
+                    ?wid,
+                    ?wsid,
+                    reported_space = ?sid,
+                    "Preserving intentionally parked paused-workspace window"
+                );
+                return Ok(outcome);
+            }
+
             if matches!(ordered_in, Some(false)) {
                 // since the connection has dropped it wont be shown in space_windows_list
                 // so ordered in can be authorative because it doesnt consider

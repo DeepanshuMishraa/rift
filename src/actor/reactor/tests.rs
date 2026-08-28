@@ -103,6 +103,10 @@ fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
     apps.simulate_until_quiet(&mut reactor);
     reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
     apps.simulate_until_quiet(&mut reactor);
+    let parked_wsid = reactor.test_window_server_id(WindowId::new(1, 1));
+    crate::sys::window_server::set_window_ordered_in_override(parked_wsid, Some(false));
+    window_server_destroyed(&mut reactor, parked_wsid, space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(parked_wsid, None);
     assert_eq!(
         reactor.state.windows.window(WindowId::new(1, 2)).unwrap().frame_monotonic,
         original_frames[1],
@@ -110,6 +114,10 @@ fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
     );
     reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
     apps.simulate_until_quiet(&mut reactor);
+    let parked_wsid = reactor.test_window_server_id(WindowId::new(1, 2));
+    crate::sys::window_server::set_window_ordered_in_override(parked_wsid, Some(false));
+    window_server_destroyed(&mut reactor, parked_wsid, space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(parked_wsid, None);
 
     let restored_frames: Vec<_> = [WindowId::new(1, 1)]
         .into_iter()
@@ -851,6 +859,35 @@ fn user_space_window_server_destroyed_removes_window_when_window_server_is_gone(
     assert!(!reactor.state.windows.contains_window(wid));
     assert_eq!(reactor.state.windows.tracked_window_id(wsid), None);
     assert_eq!(reactor.assigned_space_for_window_id(wid), None);
+}
+
+#[test]
+fn paused_tiling_keeps_parked_window_when_window_server_reports_ordered_out() {
+    let mut reactor = test_reactor_with_workspace_count(2);
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let wid = WindowId::new(1, 1);
+    let wsid = WindowServerId::new(23);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(space)]));
+    reactor.add_test_app(wid.pid);
+    reactor.add_test_window(wid, wsid, Some(space), frame);
+    let workspace = reactor.test_workspace(space, 0);
+    assert!(reactor.assign_test_window_to_workspace(space, wid, workspace));
+    reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    assert!(reactor.query_metrics()["tiling_paused"].as_bool().unwrap());
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
+
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+    window_server_destroyed(&mut reactor, wsid, space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+
+    assert!(reactor.state.windows.contains_window(wid));
+    assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space));
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
+    assert!(has_window_in_layout(&mut reactor, space, frame, wid));
 }
 
 /// Builds a reactor with `space1` active on a screen and a single tiled window
@@ -4511,6 +4548,7 @@ fn stale_cleanup_uses_ordered_state_instead_of_cached_visibility() {
         suppressed: false,
         mission_control_active: false,
         drag_active: false,
+        preserve_windows: Default::default(),
         inactive_windows: Default::default(),
         server_observations: [(wsid, window_discovery::StaleWindowObservation {
             info: Some(info),
