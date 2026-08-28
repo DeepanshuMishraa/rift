@@ -271,9 +271,11 @@ pub fn service_uninstall() -> io::Result<()> {
 
 pub fn service_start() -> io::Result<()> {
     if !crate::sys::accessibility::request_accessibility_permission() {
+        disable_service_after_permission_failure();
         eprintln!(
             "Rift Accessibility permission is required. Enable Rift in System Settings, then run `rift start` again."
         );
+        return Ok(());
     }
 
     let plist_path = plist_path()?;
@@ -348,30 +350,29 @@ pub fn service_start() -> io::Result<()> {
 
 pub fn service_restart() -> io::Result<()> {
     if !crate::sys::accessibility::request_accessibility_permission() {
+        disable_service_after_permission_failure();
         eprintln!(
             "Rift Accessibility permission is required. Enable Rift in System Settings, then run `rift restart` again."
         );
+        return Ok(());
     }
 
-    let plist_path = plist_path()?;
+    let _ = service_stop();
+    service_start()
+}
+
+fn disable_service_after_permission_failure() {
+    let Ok(plist_path) = plist_path() else {
+        return;
+    };
     if !plist_path.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("service file '{}' is not installed", plist_path.display()),
-        ));
+        return;
     }
 
     let uid = getuid();
     let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
-    let code = run_launchctl(&["kickstart", "-k", &service_target], false)?;
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("kickstart -k failed (exit {})", code),
-        ))
-    }
+    let _ = run_launchctl(&["bootout", &service_target], true);
+    let _ = run_launchctl(&["disable", &service_target], true);
 }
 
 pub fn service_stop() -> io::Result<()> {
@@ -385,33 +386,16 @@ pub fn service_stop() -> io::Result<()> {
 
     let uid = getuid();
     let service_target = format!("gui/{}/{}", uid, RIFT_PLIST);
-    let domain_target = format!("gui/{}", uid);
+    let code1 = run_launchctl(&["bootout", &service_target], true)?;
+    let code2 = run_launchctl(&["disable", &service_target], true)?;
 
-    let is_bootstrapped = run_launchctl(&["print", &service_target], true).unwrap_or(1);
-
-    if is_bootstrapped != 0 {
-        let code = run_launchctl(&["kill", "SIGTERM", &service_target], false)?;
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("kill SIGTERM failed (exit {})", code),
-            ))
-        }
+    if code1 == 0 || code2 == 0 {
+        Ok(())
     } else {
-        let code1 =
-            run_launchctl(&["bootout", &domain_target, plist_path.to_str().unwrap()], false)?;
-        let code2 = run_launchctl(&["disable", &service_target], false)?;
-
-        if code1 == 0 && code2 == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("bootout exit {}, disable exit {}", code1, code2),
-            ))
-        }
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("bootout exit {}, disable exit {}", code1, code2),
+        ))
     }
 }
 

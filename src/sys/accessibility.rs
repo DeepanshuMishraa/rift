@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::process::Command;
 
 use objc2::rc::autoreleasepool;
 use objc2::runtime::AnyObject;
@@ -56,11 +57,14 @@ unsafe fn prompt_ax_trust_dialog() {
 /// prevents launchd from repeatedly reopening System Settings when permission
 /// is missing.
 pub fn request_accessibility_permission() -> bool {
+    unsafe { prompt_ax_trust_dialog() };
     if ax_is_trusted() {
         return true;
     }
 
-    unsafe { prompt_ax_trust_dialog() };
+    let _ = Command::new("/usr/bin/open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .status();
     false
 }
 

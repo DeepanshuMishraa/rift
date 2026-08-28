@@ -97,6 +97,17 @@ fn main() {
     let opt = Cli::parse();
 
     if let Some(Commands::Service { service }) = &opt.command {
+        // Accessibility prompts are only displayed reliably once the process
+        // has an AppKit application context. Service commands still exit
+        // immediately after managing launchd; the daemon itself never prompts.
+        {
+            use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+            let mtm = MainThreadMarker::new().unwrap();
+            let app = NSApplication::sharedApplication(mtm);
+            let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            app.finishLaunching();
+            NSApplication::load();
+        }
         match handle_service_command(service) {
             Ok(msg) => {
                 println!("{}", msg);
