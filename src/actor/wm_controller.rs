@@ -64,6 +64,7 @@ pub enum ConfiguredLayoutCommand {
 #[serde(rename_all = "snake_case")]
 pub enum WmCmd {
     ToggleSpaceActivated,
+    ToggleTiling,
     Exec(ExecCmd),
     ReloadConfig,
 
@@ -301,6 +302,11 @@ impl WmController {
             Command(Wm(crate::actor::wm_controller::WmCmd::ToggleSpaceActivated)) => {
                 self.events_tx.send(reactor::Event::Command(reactor::Command::Reactor(
                     reactor::ReactorCommand::ToggleSpaceActivated,
+                )));
+            }
+            Command(Wm(crate::actor::wm_controller::WmCmd::ToggleTiling)) => {
+                self.events_tx.send(reactor::Event::Command(reactor::Command::Reactor(
+                    reactor::ReactorCommand::ToggleTiling,
                 )));
             }
             Command(Wm(NextWorkspace)) => {

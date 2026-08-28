@@ -2219,6 +2219,36 @@ impl LayoutEngine {
     where
         F: Fn(WindowId) -> Option<CGRect>,
     {
+        self.calculate_layout_with_virtual_workspaces_preserving_tiling(
+            window_store,
+            space,
+            screen,
+            gaps,
+            stack_line_thickness,
+            stack_line_horiz,
+            stack_line_vert,
+            get_window_frame,
+            all_screens,
+            false,
+        )
+    }
+
+    pub fn calculate_layout_with_virtual_workspaces_preserving_tiling<F>(
+        &mut self,
+        window_store: &WindowStore,
+        space: SpaceId,
+        screen: CGRect,
+        gaps: &crate::common::config::GapSettings,
+        stack_line_thickness: f64,
+        stack_line_horiz: crate::common::config::HorizontalPlacement,
+        stack_line_vert: crate::common::config::VerticalPlacement,
+        get_window_frame: F,
+        all_screens: &[CGRect],
+        preserve_tiled_frames: bool,
+    ) -> Vec<(WindowId, CGRect)>
+    where
+        F: Fn(WindowId) -> Option<CGRect>,
+    {
         use crate::model::HideCorner;
 
         let mut positions = HashMap::default();
@@ -2267,16 +2297,24 @@ impl LayoutEngine {
 
         if let Some(active_workspace_id) = self.virtual_workspace_manager.active_workspace(space) {
             if let Some(layout) = self.workspace_layouts.active(space, active_workspace_id) {
-                let tiled_positions = self.workspace_tree(active_workspace_id).calculate_layout(
-                    layout,
-                    screen,
-                    self.layout_settings.stack.stack_offset,
-                    &self.window_layout_constraints,
-                    gaps,
-                    stack_line_thickness,
-                    stack_line_horiz,
-                    stack_line_vert,
-                );
+                let tiled_positions = if preserve_tiled_frames {
+                    self.workspace_tree(active_workspace_id)
+                        .visible_windows_in_layout(layout)
+                        .into_iter()
+                        .filter_map(|wid| get_window_frame(wid).map(|frame| (wid, frame)))
+                        .collect()
+                } else {
+                    self.workspace_tree(active_workspace_id).calculate_layout(
+                        layout,
+                        screen,
+                        self.layout_settings.stack.stack_offset,
+                        &self.window_layout_constraints,
+                        gaps,
+                        stack_line_thickness,
+                        stack_line_horiz,
+                        stack_line_vert,
+                    )
+                };
 
                 for (wid, rect) in tiled_positions {
                     positions.insert(wid, rect);

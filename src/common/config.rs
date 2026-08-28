@@ -455,6 +455,11 @@ pub struct Settings {
     #[serde(default)]
     pub run_on_start: Vec<String>,
 
+    /// Optional argv command run after `toggle_tiling`. It receives
+    /// `RIFT_TILING_PAUSED=true` or `false` in its environment.
+    #[serde(default)]
+    pub tiling_toggle_command: Option<Vec<String>>,
+
     /// Whether to reapply app rules when a window title changes.
     /// Enable hot-reloading of the config file when it changes
     #[serde(default = "yes")]
@@ -1837,6 +1842,33 @@ mod tests {
         let cfg = Config::parse(toml).unwrap();
         // We expect keys to be parsed into hotkeys
         assert!(!cfg.keys.is_empty());
+    }
+
+    #[test]
+    fn toggle_tiling_binding_and_callback_parse() {
+        let cfg = Config::parse(
+            r#"
+            [settings]
+            tiling_toggle_command = ["/bin/zsh", "-lc", "echo $RIFT_TILING_PAUSED"]
+
+            [keys]
+            "Alt + D" = "toggle_tiling"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.settings.tiling_toggle_command,
+            Some(vec![
+                "/bin/zsh".to_string(),
+                "-lc".to_string(),
+                "echo $RIFT_TILING_PAUSED".to_string(),
+            ])
+        );
+        assert!(matches!(
+            cfg.keys[0].1,
+            WmCommand::Wm(crate::actor::wm_controller::WmCmd::ToggleTiling)
+        ));
     }
 
     #[test]

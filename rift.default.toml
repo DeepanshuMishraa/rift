@@ -60,6 +60,10 @@ auto_focus_blacklist = []
 
 run_on_start = []
 
+# Optional command run after `toggle_tiling`. It receives
+# RIFT_TILING_PAUSED=true or false in its environment.
+# tiling_toggle_command = ["/bin/zsh", "-lc", "echo $RIFT_TILING_PAUSED"]
+
 # Hot Reloading
 # - If true, rift will watch the config file for changes and reload automatically.
 # - If false, your config changes will only apply when restarting rift.
@@ -425,6 +429,9 @@ comb1 = "Alt + Shift"
 # the following commands *only* work when the scrolling layout is active
 # - scroll_strip = { delta = 0.5 }
 # - snap_strip / center_selection
+
+# Toggle Rift's global tiling pause while keeping virtual workspaces active.
+"Alt + D" = "toggle_tiling"
 
 "Alt + Z" = "toggle_space_activated"
 

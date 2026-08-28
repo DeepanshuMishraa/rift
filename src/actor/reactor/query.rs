@@ -601,6 +601,7 @@ impl Reactor {
             "workspaces": stats.total_workspaces,
             "applications": self.app_manager.apps.len(),
             "screens": self.space_state.screens.len(),
+            "tiling_paused": self.tiling_paused,
             "workspace_stats": workspace_stats,
         })
     }
@@ -782,6 +783,7 @@ impl Reactor {
             "window_server_info": self.state.windows.window_server_info_count(),
             "visible_window_server_ids": self.state.windows.visible_window_server_count(),
             "screens": self.space_state.screens.len(),
+            "tiling_paused": self.tiling_paused,
             "known_managed_windows": known_managed_windows,
         });
 

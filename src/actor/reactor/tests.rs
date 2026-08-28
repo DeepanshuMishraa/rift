@@ -52,6 +52,31 @@ fn layout_query_exposes_active_and_inactive_workspace_container_trees() {
 }
 
 #[test]
+fn toggling_tiling_preserves_virtual_workspace_navigation() {
+    let mut reactor = test_reactor();
+    let space = SpaceId::new(1);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+
+    reactor.handle_event(space_state_event(vec![screen], vec![Some(space)]));
+    let first_workspace = reactor
+        .query_active_workspace(Some(space))
+        .expect("active workspace");
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    assert_eq!(reactor.query_metrics()["tiling_paused"], true);
+
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(1));
+    assert_ne!(
+        reactor.query_active_workspace(Some(space)),
+        Some(first_workspace),
+        "virtual workspace navigation should remain available while tiling is paused"
+    );
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    assert_eq!(reactor.query_metrics()["tiling_paused"], false);
+}
+
+#[test]
 fn config_reload_propagates_non_keybinding_changes_to_wm_controller() {
     let mut reactor = test_reactor();
     let (wm_tx, mut wm_rx) = actor::channel();

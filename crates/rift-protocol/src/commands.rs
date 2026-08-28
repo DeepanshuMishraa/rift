@@ -100,6 +100,7 @@ pub enum ReactorCommand {
     },
     SwitchSpace(Direction),
     ToggleSpaceActivated,
+    ToggleTiling,
     FocusWindow {
         window_id: WindowId,
         window_server_id: Option<u32>,

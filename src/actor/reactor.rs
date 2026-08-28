@@ -65,6 +65,7 @@ mod SpaceEventHandler {
 mod tests;
 
 use std::cell::RefCell;
+use std::process::Command as ProcessCommand;
 use std::rc::Rc;
 use std::thread;
 
@@ -80,7 +81,7 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 pub use replay::{Record, replay};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use transaction_manager::TransactionId;
 
 use super::{event_tap, gesture_tap};
@@ -321,6 +322,7 @@ pub struct Reactor {
     refresh_quarantine_manager: managers::RefreshQuarantineManager,
     pending_space_change_manager: managers::PendingSpaceChangeManager,
     active_spaces: HashSet<SpaceId>,
+    tiling_paused: bool,
     pub animation_tx: Option<AnimationSender>,
 }
 
@@ -442,6 +444,7 @@ impl Reactor {
                 pending_space_change: None,
             },
             active_spaces: HashSet::default(),
+            tiling_paused: false,
             animation_tx: None,
         };
         reactor
@@ -1632,6 +1635,12 @@ impl Reactor {
                     &mut self.space_activation_policy,
                     command_workflow::ToggleSpacePayload { config, space, display_uuid },
                 );
+            }
+            Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)) => {
+                self.tiling_paused = !self.tiling_paused;
+                info!(paused = self.tiling_paused, "Rift tiling toggled");
+                self.execute_tiling_toggle_command();
+                return Ok(EventOutcome::layout_changed(false));
             }
             Event::Command(Command::Reactor(ReactorCommand::ShowMissionControlAll)) => {
                 return command_workflow::handle_mission_control_command(
@@ -3327,8 +3336,10 @@ impl Reactor {
             self.layout_manager.layout_engine.handle_event(&mut self.state.windows, event);
         let mut response = layout_outcome.response;
         let (placements, resizes, workspace_focus) = layout_outcome.app_rules.into_parts();
-        self.apply_app_rule_placements(placements);
-        self.apply_app_rule_resizes(resizes);
+        if !self.tiling_paused {
+            self.apply_app_rule_placements(placements);
+            self.apply_app_rule_resizes(resizes);
+        }
         let workspace_switch_space = workspace_focus.map(|request| request.space);
         if let Some(request) = workspace_focus {
             self.store_current_floating_positions(request.space);
@@ -4654,10 +4665,47 @@ impl Reactor {
         space_scope: Option<SpaceId>,
         context: &'static str,
     ) -> bool {
-        LayoutManager::update_layout(self, is_resize, is_workspace_switch, space_scope)
+        LayoutManager::update_layout(
+            self,
+            is_resize,
+            is_workspace_switch,
+            space_scope,
+            self.tiling_paused,
+        )
             .unwrap_or_else(|e| {
                 warn!(error = ?e, "{}", context);
                 false
             })
+    }
+
+    fn execute_tiling_toggle_command(&self) {
+        let Some(command) = self.config.settings.tiling_toggle_command.clone() else {
+            return;
+        };
+        let Some((program, args)) = command.split_first() else {
+            warn!("tiling_toggle_command is empty; ignoring it");
+            return;
+        };
+
+        let program = program.clone();
+        let args = args.to_vec();
+        let paused = self.tiling_paused;
+        thread::spawn(move || {
+            let paused_value = if paused { "true" } else { "false" };
+            match ProcessCommand::new(&program)
+                .args(&args)
+                .env("RIFT_TILING_PAUSED", paused_value)
+                .output()
+            {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => warn!(
+                    ?program,
+                    status = ?output.status,
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "tiling_toggle_command failed"
+                ),
+                Err(error) => warn!(?program, %error, "could not run tiling_toggle_command"),
+            }
+        });
     }
 }

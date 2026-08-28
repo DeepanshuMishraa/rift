@@ -207,12 +207,17 @@ impl LayoutManager {
         is_resize: bool,
         is_workspace_switch: bool,
         space_scope: Option<SpaceId>,
+        tiling_paused: bool,
     ) -> Result<bool, crate::model::reactor::ReactorError> {
-        let layout_result = Self::calculate_layout(reactor, space_scope);
+        let layout_result = Self::calculate_layout(reactor, space_scope, tiling_paused);
         Self::apply_layout(reactor, layout_result, is_resize, is_workspace_switch)
     }
 
-    fn calculate_layout(reactor: &mut Reactor, space_scope: Option<SpaceId>) -> LayoutResult {
+    fn calculate_layout(
+        reactor: &mut Reactor,
+        space_scope: Option<SpaceId>,
+        tiling_paused: bool,
+    ) -> LayoutResult {
         if reactor.state.windows.tracked_window_count() == 0 {
             return LayoutResult::new();
         }
@@ -246,7 +251,23 @@ impl LayoutManager {
                 .layout_manager
                 .layout_engine
                 .update_space_display(space, display_uuid_opt.clone());
-            let mut layout =
+            let mut layout = if tiling_paused {
+                reactor
+                    .layout_manager
+                    .layout_engine
+                    .calculate_layout_with_virtual_workspaces_preserving_tiling(
+                        &reactor.state.windows,
+                        space,
+                        screen.frame.clone(),
+                        &gaps,
+                        reactor.config.settings.ui.stack_line.thickness(),
+                        reactor.config.settings.ui.stack_line.horiz_placement,
+                        reactor.config.settings.ui.stack_line.vert_placement,
+                        |wid| reactor.state.windows.window(wid).map(|w| w.frame_monotonic),
+                        &all_screen_frames,
+                        true,
+                    )
+            } else {
                 reactor.layout_manager.layout_engine.calculate_layout_with_virtual_workspaces(
                     &reactor.state.windows,
                     space,
@@ -257,7 +278,8 @@ impl LayoutManager {
                     reactor.config.settings.ui.stack_line.vert_placement,
                     |wid| reactor.state.windows.window(wid).map(|w| w.frame_monotonic),
                     &all_screen_frames,
-                );
+                )
+            };
             if active_space_count > 1
                 && reactor.layout_manager.layout_engine.active_layout_mode_at(space)
                     == LayoutMode::Scrolling
