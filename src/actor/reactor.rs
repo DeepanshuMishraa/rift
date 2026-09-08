@@ -29,17 +29,7 @@ mod SpaceEventHandler {
         let tracked_window = reactor.state.windows.tracked_window_id(wsid);
         let assigned_space =
             tracked_window.and_then(|window| reactor.assigned_space_for_window_id(window));
-        let preserve_parked_window = tracked_window.is_some_and(|window| {
-            reactor.tiling_paused
-                && assigned_space.is_some_and(|space| reactor.is_space_active(space))
-                && assigned_space.is_some_and(|space| {
-                    !reactor.layout_manager.layout_engine.is_window_in_active_workspace(
-                        &reactor.state.windows,
-                        space,
-                        window,
-                    )
-                })
-        });
+        let preserve_parked_window = reactor.tiling_paused && assigned_space.is_some();
         let observations = super::events::space::WindowServerDestroyedObservations {
             resolved_space: reactor.resolve_native_space(wsid, None),
             active_spaces: reactor.active_spaces.clone(),
@@ -1239,16 +1229,14 @@ impl Reactor {
                 let tracked_window = self.state.windows.tracked_window_id(wsid);
                 let assigned_space =
                     tracked_window.and_then(|window| self.assigned_space_for_window_id(window));
-                let preserve_parked_window = tracked_window.is_some_and(|window| {
-                    self.tiling_paused
-                        && assigned_space.is_some_and(|space| self.is_space_active(space))
-                        && assigned_space.is_some_and(|space| {
-                            !self.layout_manager.layout_engine.is_window_in_active_workspace(
-                                &self.state.windows,
-                                space,
-                                window,
-                            )
-                        })
+                let preserve_parked_window = tracked_window.is_some_and(|_window| {
+                    // While tiling is paused, a WindowServer disappearance can
+                    // simply be the old native Space being left. Preserve the
+                    // known Rift assignment even if the active-space snapshot
+                    // has already advanced and the resolver reports a stale
+                    // destination. Real closes still arrive through AX/window
+                    // destruction and are handled by their own events.
+                    self.tiling_paused && assigned_space.is_some()
                 });
                 let last_known_user_space = topology_workflow::resolve_last_known_user_space(
                     tracked_window.and_then(|window| self.best_space_for_window_id(window)),

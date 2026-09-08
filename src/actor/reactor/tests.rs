@@ -1051,6 +1051,33 @@ fn paused_tiling_keeps_parked_window_when_window_server_reports_ordered_out() {
     assert!(has_window_in_layout(&mut reactor, space, frame, wid));
 }
 
+#[test]
+fn paused_tiling_keeps_assigned_window_during_native_space_switch() {
+    let mut reactor = test_reactor_with_workspace_count(2);
+    let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    let wid = WindowId::new(1, 1);
+    let wsid = WindowServerId::new(24);
+
+    reactor.handle_event(space_state_event(vec![frame], vec![Some(space)]));
+    reactor.add_test_app(wid.pid);
+    reactor.add_test_window(wid, wsid, Some(space), frame);
+    let workspace = reactor.test_workspace(space, 0);
+    assert!(reactor.assign_test_window_to_workspace(space, wid, workspace));
+    reactor.send_layout_event(LayoutEvent::WindowAdded(space, wid));
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+
+    // A native Space transition can report the old-space window as ordered out
+    // after the active-space set has already moved to the destination Space.
+    reactor.active_spaces.clear();
+    crate::sys::window_server::set_window_ordered_in_override(wsid, Some(false));
+    window_server_destroyed(&mut reactor, wsid, space, SpaceEventKind::User);
+    crate::sys::window_server::set_window_ordered_in_override(wsid, None);
+
+    assert!(reactor.state.windows.contains_window(wid));
+    assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space));
+}
+
 /// Builds a reactor with `space1` active on a screen and a single tiled window
 /// (`wid`/`wsid`) assigned to `space1`. `space2` exists with workspaces so it can
 /// be a reassignment target. Returns the pieces the `appeared` tests need.
