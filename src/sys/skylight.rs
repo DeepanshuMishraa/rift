@@ -346,6 +346,11 @@ unsafe extern "C" {
     // this does not work and we should not rely on it
     pub fn CGSGetActiveSpace(cid: c_int) -> u64;
     pub fn CGSCopySpaces(cid: c_int, mask: CGSSpaceMask) -> *mut CFArray<SpaceId>;
+    pub fn CGSMoveWindowsToManagedSpace(
+        cid: cid_t,
+        windows: *mut CFArray<CFNumber>,
+        space: u64,
+    );
     pub fn CGSCopyManagedDisplays(cid: c_int) -> *mut CFArray;
     pub fn CGSCopyManagedDisplaySpaces(cid: c_int) -> *mut NSArray;
     pub fn SLSGetSpaceManagementMode(cid: cid_t) -> c_int;

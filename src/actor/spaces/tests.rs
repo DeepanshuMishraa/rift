@@ -1,8 +1,8 @@
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-
 use super::*;
 use crate::actor;
 use crate::actor::{reactor, wm_controller};
+use crate::common::collections::HashMap;
 
 fn make_screen(space: Option<SpaceId>) -> ScreenInfo {
     ScreenInfo {
@@ -711,6 +711,34 @@ fn topology_change_emits_space_remap_from_display_history() {
         }
         other => panic!("unexpected wm event: {other:?}"),
     }
+}
+
+#[test]
+fn clamshell_remaps_all_spaces_by_ordinal_to_surviving_display() {
+    let (actor, _wm_rx, _reactor_rx) = build_actor();
+    let mut previous = HashMap::default();
+    previous.insert(
+        "builtin".to_string(),
+        vec![SpaceId::new(101), SpaceId::new(102), SpaceId::new(103)],
+    );
+    previous.insert(
+        "external".to_string(),
+        vec![SpaceId::new(201), SpaceId::new(202), SpaceId::new(203)],
+    );
+    let mut current = HashMap::default();
+    current.insert(
+        "external".to_string(),
+        vec![SpaceId::new(201), SpaceId::new(202), SpaceId::new(203)],
+    );
+
+    assert_eq!(
+        actor.compute_clamshell_space_remaps(&previous, &current),
+        vec![
+            (SpaceId::new(101), SpaceId::new(201)),
+            (SpaceId::new(102), SpaceId::new(202)),
+            (SpaceId::new(103), SpaceId::new(203)),
+        ]
+    );
 }
 
 #[test]

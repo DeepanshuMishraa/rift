@@ -1330,15 +1330,19 @@ impl Reactor {
             }
             Event::WindowDeminiaturized(wid) => {
                 let active_space = self.state.windows.window(wid).and_then(|window| {
-                    self.best_space_for_window(&window.frame_monotonic, window.info.sys_id)
+                    // Minimized windows can retain their last frame while the
+                    // layout engine parks them off-screen (notably in global
+                    // float/paused mode). The preserved Rift assignment is
+                    // authoritative; geometry is only a fallback for windows
+                    // that have not been assigned yet.
+                    self.assigned_space_for_window_id(wid)
                         .filter(|space| self.is_space_active(*space))
                         .or_else(|| {
-                            window
-                                .info
-                                .sys_id
-                                .is_none()
-                                .then(|| self.workspace_command_space())
-                                .flatten()
+                            self.best_space_for_window(&window.frame_monotonic, window.info.sys_id)
+                                .filter(|space| self.is_space_active(*space))
+                        })
+                        .or_else(|| {
+                            window.info.sys_id.is_none().then(|| self.workspace_command_space()).flatten()
                         })
                 });
                 return window_workflow::handle_window_deminiaturized(
@@ -2592,11 +2596,17 @@ impl Reactor {
             self.pending_space_change_manager.pending_space_change = Some(pending_space_state);
             return Ok(outcome);
         }
-        for (previous_space, space) in space_remaps {
+        for (previous_space, space) in &space_remaps {
+            let windows = window_server::space_window_list_for_connection(
+                &[previous_space.get()],
+                0,
+                true,
+            );
+            window_server::move_windows_to_space(&windows, *space);
             self.layout_manager.layout_engine.remap_space(
                 &mut self.state.windows,
-                previous_space,
-                space,
+                *previous_space,
+                *space,
             );
         }
         for screen in &self.space_state.screens {

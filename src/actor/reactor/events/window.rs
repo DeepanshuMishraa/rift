@@ -134,7 +134,10 @@ pub fn handle_window_minimized(
     let _ = utils::refresh_heuristic(state, wid);
     Ok(
         crate::actor::reactor::events::EventOutcome::window_membership_changed(false, false)
-            .with_layout_event(LayoutEvent::WindowRemoved(wid)),
+            // Minimization is a temporary visibility change. Preserve the
+            // native-space/workspace assignment and floating state so a later
+            // deminiaturize can put the window back where the user left it.
+            .with_layout_event(LayoutEvent::WindowRemovedPreserveFloating(wid)),
     )
 }
 

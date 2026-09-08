@@ -128,6 +128,23 @@ fn cf_array_from_u64s(ids: &[u64]) -> CFRetained<CFArray<CFNumber>> {
     CFArray::from_retained_objects(&nums)
 }
 
+/// Move WindowServer windows to a native managed Space without changing their
+/// application or accessibility identity.
+pub fn move_windows_to_space(windows: &[u32], space: SpaceId) {
+    if windows.is_empty() {
+        return;
+    }
+    let window_ids: Vec<u64> = windows.iter().map(|&id| id as u64).collect();
+    let array = cf_array_from_u64s(&window_ids);
+    unsafe {
+        CGSMoveWindowsToManagedSpace(
+            *G_CONNECTION,
+            CFRetained::as_ptr(&array).as_ptr(),
+            space.get(),
+        );
+    }
+}
+
 pub struct WindowIterator {
     iter: *mut CFType,
 }

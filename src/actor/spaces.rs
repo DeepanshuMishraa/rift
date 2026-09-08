@@ -628,7 +628,7 @@ impl SpacesActor {
         let allow_space_remap = should_force_refresh_layout
             && !has_duplicate_spaces
             && screens.iter().all(|screen| screen.space.is_some());
-        let space_remaps = self.compute_space_remaps(&screens, allow_space_remap);
+        let mut space_remaps = self.compute_space_remaps(&screens, allow_space_remap);
         let menu_bar_space = self.resolve_menu_bar_space(&screens);
         #[cfg(not(test))]
         let active_display_uuid = crate::sys::screen::active_menu_bar_display_uuid();
@@ -645,6 +645,7 @@ impl SpacesActor {
                         .map(|screen| screen.display_uuid.clone())
                 })
             });
+        let previous_display_space_ids = self.state.display_space_ids.clone();
         #[cfg(test)]
         {
             let mut display_space_ids: HashMap<String, Vec<SpaceId>> = HashMap::default();
@@ -658,6 +659,14 @@ impl SpacesActor {
         #[cfg(not(test))]
         {
             self.state.display_space_ids = managed_display_space_ids();
+        }
+        if allow_space_remap && display_set_changed {
+            space_remaps.extend(self.compute_clamshell_space_remaps(
+                &previous_display_space_ids,
+                &self.state.display_space_ids,
+            ));
+            space_remaps.sort_unstable();
+            space_remaps.dedup();
         }
 
         if !screens.is_empty() {
@@ -834,6 +843,38 @@ impl SpacesActor {
         }
 
         remaps
+    }
+
+    /// When the built-in display disappears, macOS leaves its native Spaces
+    /// attached to that display instead of moving them to the surviving
+    /// display. Preserve Rift's ordinal workspace mapping and let the reactor
+    /// move the actual WindowServer windows as well.
+    fn compute_clamshell_space_remaps(
+        &self,
+        previous: &HashMap<String, Vec<SpaceId>>,
+        current: &HashMap<String, Vec<SpaceId>>,
+    ) -> Vec<(SpaceId, SpaceId)> {
+        if current.len() != 1 {
+            return Vec::new();
+        }
+
+        let Some((target_display, target_spaces)) = current.iter().next()
+        else {
+            return Vec::new();
+        };
+        let Some((_, old_spaces)) = previous
+            .iter()
+            .find(|(uuid, spaces)| uuid != &target_display && !spaces.is_empty())
+        else {
+            return Vec::new();
+        };
+
+        old_spaces
+            .iter()
+            .copied()
+            .zip(target_spaces.iter().copied())
+            .filter(|(old, new)| old != new)
+            .collect()
     }
 
     fn resolve_command_space(

@@ -1502,12 +1502,15 @@ fn crossing_native_spaces_reconciles_membership_with_one_arrange_pass() {
 #[test]
 fn duplicate_minimize_deminimize_and_unknown_window_events_do_not_arrange() {
     let (mut reactor, wid, _wsid, _space1, _space2, _frame) = reactor_with_window_on_space1();
+    let assigned_before = reactor.assigned_space_for_window_id(wid);
 
     reactor.dispatch_workflow(Event::WindowMinimized(wid)).unwrap();
+    assert_eq!(reactor.assigned_space_for_window_id(wid), assigned_before);
     let duplicate_minimize = reactor.dispatch_workflow(Event::WindowMinimized(wid)).unwrap();
     assert!(!duplicate_minimize.arrange.requested);
 
     reactor.dispatch_workflow(Event::WindowDeminiaturized(wid)).unwrap();
+    assert_eq!(reactor.assigned_space_for_window_id(wid), assigned_before);
     let duplicate_deminimize = reactor.dispatch_workflow(Event::WindowDeminiaturized(wid)).unwrap();
     assert!(!duplicate_deminimize.arrange.requested);
 
