@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use rift_protocol::{FloatingWindowSize, FloatingWindowSizePreset, ToggleWindowFloatingOptions};
@@ -31,6 +32,12 @@ pub use rift_protocol::LayoutCommand;
 
 const SMART_FLOATING_WIDTH_RATIO: f64 = 0.8;
 const SMART_FLOATING_HEIGHT_RATIO: f64 = 0.93;
+
+/// How long a paused-mode restore position is shielded from live-frame
+/// refreshes after its window temporarily vanished (e.g. display sleep).
+/// The guard normally clears on convergence (see below); this is only a
+/// backstop so a guard can never freeze a position forever.
+const PAUSED_RESTORE_GUARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn requested_floating_frame(
     mut frame: CGRect,
@@ -156,6 +163,15 @@ pub struct LayoutEngine {
     /// Inactive virtual-workspace windows are parked off-screen, so their
     /// current frame cannot be used to restore the visible layout.
     paused_tiled_positions: HashMap<(SpaceId, WindowId), CGRect>,
+    /// Windows whose paused restore position must not be overwritten by
+    /// live-frame refreshes. Set when a window with a remembered position
+    /// is preserve-removed (e.g. its display slept and the window server
+    /// temporarily reports it as gone): on wake macOS dumps windows at
+    /// arbitrary positions before Rift re-places them, and those dumped
+    /// frames must not become the remembered position. Cleared when the
+    /// live frame converges with the remembered one (Rift's re-place
+    /// landed), on explicit user drags/moves, or after a timeout.
+    paused_restore_guards: HashMap<(SpaceId, WindowId), Instant>,
     virtual_workspace_manager: WorkspaceStore,
     layout_settings: LayoutSettings,
     broadcast_tx: Option<BroadcastSender>,
@@ -1054,7 +1070,17 @@ impl LayoutEngine {
             self.focused_window = None;
         }
         self.window_layout_constraints.remove(&wid);
-        self.paused_tiled_positions.retain(|(_, window), _| *window != wid);
+        if preserve_floating {
+            // A preserve-removal means the window vanished temporarily (display
+            // sleep, minimize, fullscreen) while keeping its assignment. Its
+            // remembered paused position stays valid and is shielded from
+            // live-frame refreshes until the live frame converges with it, so
+            // an OS-dumped post-wake position cannot become the restore target.
+            self.guard_paused_restore_positions(wid);
+        } else {
+            self.paused_tiled_positions.retain(|(_, window), _| *window != wid);
+            self.paused_restore_guards.retain(|(_, window), _| *window != wid);
+        }
 
         if let Some(space) = removal.active_space {
             self.broadcast_windows_changed(window_store, space);
@@ -1317,6 +1343,14 @@ impl LayoutEngine {
                 ((space, window), frame)
             })
             .collect();
+        let paused_guards = std::mem::take(&mut self.paused_restore_guards);
+        self.paused_restore_guards = paused_guards
+            .into_iter()
+            .map(|((space, window), at)| {
+                let space = if space == old_space { new_space } else { space };
+                ((space, window), at)
+            })
+            .collect();
         self.virtual_workspace_manager.remap_space(window_store, old_space, new_space);
 
         if let Some(uuid) = self.space_display_map.remove(&old_space) {
@@ -1356,6 +1390,7 @@ impl LayoutEngine {
             focused_window: None,
             window_layout_constraints: HashMap::default(),
             paused_tiled_positions: HashMap::default(),
+            paused_restore_guards: HashMap::default(),
             virtual_workspace_manager,
             layout_settings: layout_settings.clone(),
             broadcast_tx,
@@ -3068,6 +3103,10 @@ impl LayoutEngine {
 
         let was_floating = self.floating.is_floating(window_id);
 
+        // An explicit move is fresh user intent: drop any stale restore
+        // shields so the target position is adopted normally.
+        self.clear_paused_restore_guard(window_id);
+
         if was_floating {
             self.floating.remove_active_for_window(window_id);
         } else {
@@ -3240,10 +3279,68 @@ impl LayoutEngine {
                 bundle_id.as_deref(),
                 all_screens,
             ) {
+                // A guarded window re-appeared with an untrusted live frame
+                // (e.g. macOS dumped it somewhere on wake). Keep the shielded
+                // pre-disappearance position until the live frame converges
+                // with it instead of adopting the dumped position.
+                if self.paused_restore_guard_active(space, window_id, frame) {
+                    tracing::trace!(
+                        ?space,
+                        ?window_id,
+                        ?frame,
+                        "store_visible_paused: guarded, keeping shielded position"
+                    );
+                    continue;
+                }
                 tracing::trace!(?space, ?window_id, ?frame, "store_visible_paused: recording");
                 self.paused_tiled_positions.insert((space, window_id), frame);
             }
         }
+    }
+
+    /// Shield a window's remembered paused positions from live-frame
+    /// refreshes. Only keys that already have a remembered position are
+    /// guarded; there is nothing to protect otherwise.
+    fn guard_paused_restore_positions(&mut self, window: WindowId) {
+        let now = Instant::now();
+        let guarded: Vec<(SpaceId, WindowId)> = self
+            .paused_tiled_positions
+            .keys()
+            .filter(|(_, stored_window)| *stored_window == window)
+            .copied()
+            .collect();
+        for key in guarded {
+            self.paused_restore_guards.insert(key, now);
+        }
+    }
+
+    /// Drop all restore guards for a window. User-driven moves (drags,
+    /// explicit display moves) make the live frame authoritative again.
+    pub fn clear_paused_restore_guard(&mut self, window: WindowId) {
+        self.paused_restore_guards.retain(|(_, stored_window), _| *stored_window != window);
+    }
+
+    /// Whether the guard still shields `(space, window)` from adopting
+    /// `live`. Clears (and returns false) once the live frame converges
+    /// with the remembered one or the guard expires.
+    fn paused_restore_guard_active(
+        &mut self,
+        space: SpaceId,
+        window: WindowId,
+        live: CGRect,
+    ) -> bool {
+        let Some(guarded_at) = self.paused_restore_guards.get(&(space, window)).copied() else {
+            return false;
+        };
+        let converged = self
+            .paused_tiled_positions
+            .get(&(space, window))
+            .is_some_and(|remembered| *remembered == live);
+        if converged || guarded_at.elapsed() >= PAUSED_RESTORE_GUARD_TIMEOUT {
+            self.paused_restore_guards.remove(&(space, window));
+            return false;
+        }
+        true
     }
 
     pub fn store_floating_position(
@@ -3308,6 +3405,14 @@ impl LayoutEngine {
             .map(|((space, window), frame)| {
                 let window = if window == from { to } else { window };
                 ((space, window), frame)
+            })
+            .collect();
+        let paused_guards = std::mem::take(&mut self.paused_restore_guards);
+        self.paused_restore_guards = paused_guards
+            .into_iter()
+            .map(|((space, window), at)| {
+                let window = if window == from { to } else { window };
+                ((space, window), at)
             })
             .collect();
         self.transfer_persisted_window_identity(from, to);

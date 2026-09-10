@@ -77,6 +77,57 @@ fn toggling_tiling_preserves_virtual_workspace_navigation() {
 }
 
 #[test]
+fn paused_tiling_survives_display_sleep_wake_cycle() {
+    // Sleep removes the display, so the window server reports the ACTIVE
+    // workspace window as disappeared; on wake macOS dumps it at a
+    // partially-visible bottom position before Rift re-discovers it.
+    // The pre-sleep position must be restored, not the dumped one.
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(1));
+    let wid = WindowId::new(1, 1);
+    let wsid = reactor.test_window_server_id(wid);
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    apps.simulate_until_quiet(&mut reactor);
+    let original = reactor.state.windows.window(wid).unwrap().frame_monotonic;
+
+    // Display sleeps: active-workspace window disappears from the server.
+    window_server_destroyed(&mut reactor, wsid, space, SpaceEventKind::User);
+    apps.simulate_until_quiet(&mut reactor);
+    assert!(
+        reactor.state.windows.window(wid).is_some(),
+        "sleep-time disappearance must preserve (not destroy) the window"
+    );
+    // The test helper drops the resulting layout outcome; apply the removal
+    // half the way production dispatch would.
+    reactor.send_layout_event(LayoutEvent::WindowRemovedPreserveFloating(wid));
+
+    // Wake: macOS dumped the window at a partially-visible bottom position.
+    let dumped = CGRect::new(CGPoint::new(100., 900.), CGSize::new(800., 600.));
+    apps.windows.get_mut(&wid).expect("fake app window").frame = dumped;
+    if let Some(window) = reactor.state.windows.window_mut(wid) {
+        window.frame_monotonic = dumped;
+    }
+    reactor.mark_test_window_visible_in_space(wsid, space);
+    window_server_appeared(&mut reactor, wsid, space, SpaceEventKind::User);
+    reactor.discover_test_windows(1, vec![], vec![wid]);
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.state.windows.window(wid).unwrap().frame_monotonic,
+        original,
+        "paused float-mode position must survive a display sleep/wake cycle"
+    );
+    assert_eq!(
+        apps.windows.get(&wid).unwrap().frame,
+        original,
+        "the physical window must be moved back to its pre-sleep frame"
+    );
+}
+
+#[test]
 fn paused_tiling_restores_visible_frames_after_workspace_round_trip() {
     let (mut apps, mut reactor) = test_context_with_workspace_count(2);
     let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));

@@ -66,6 +66,7 @@ impl PersistedLayout {
             focused_window: None,
             window_layout_constraints: HashMap::default(),
             paused_tiled_positions: HashMap::default(),
+            paused_restore_guards: HashMap::default(),
             virtual_workspace_manager: self.virtual_workspace_manager,
             layout_settings: LayoutSettings::default(),
             broadcast_tx: None,

@@ -321,6 +321,9 @@ pub fn handle_window_frame_changed(
             DragState::Active { .. } | DragState::PendingSwap { .. }
         );
     if dragging {
+        // A live drag is explicit user intent: the dragged position is
+        // authoritative, so drop any post-disappearance restore shield.
+        layout.layout_engine.clear_paused_restore_guard(wid);
         let needs_session = !matches!(
             &drag.drag_state,
             DragState::Active { session } | DragState::PendingSwap { session, .. }
