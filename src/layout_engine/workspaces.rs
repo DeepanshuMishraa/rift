@@ -212,6 +212,13 @@ impl WorkspaceLayouts {
         }
     }
 
+    /// Drop every layout entry for a retired churn space. Its workspace
+    /// structures are gone, so any remaining entry is garbage; the surviving
+    /// space keeps its own layouts untouched.
+    pub(crate) fn drop_space(&mut self, space: SpaceId) {
+        self.map.retain(|(entry_space, _), _| *entry_space != space);
+    }
+
     pub(crate) fn active(
         &self,
         space: SpaceId,

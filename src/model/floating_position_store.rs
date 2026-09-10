@@ -94,6 +94,38 @@ impl FloatingPositionStore {
             .collect();
     }
 
+    /// Migrate entries off a retired churn space onto adopted workspaces.
+    /// Surviving target entries win on collision: a window adopted from the
+    /// old space cannot have a fresh target entry, so any pre-existing one
+    /// is stale. Entries for unadopted windows are dropped with their space.
+    pub fn migrate_space_for_churn(
+        &mut self,
+        old_space: SpaceId,
+        new_space: SpaceId,
+        adopted: &HashMap<WindowId, VirtualWorkspaceId>,
+    ) {
+        if old_space == new_space {
+            return;
+        }
+        let old_keys: Vec<(SpaceId, VirtualWorkspaceId, WindowId)> = self
+            .positions
+            .keys()
+            .copied()
+            .filter(|(space, _, _)| *space == old_space)
+            .collect();
+        for key in old_keys {
+            let (_, _, window) = key;
+            let Some(frame) = self.positions.remove(&key) else {
+                continue;
+            };
+            if let Some(target_workspace) = adopted.get(&window) {
+                self.positions
+                    .entry((new_space, *target_workspace, window))
+                    .or_insert(frame);
+            }
+        }
+    }
+
     pub fn store(
         &mut self,
         space: SpaceId,

@@ -77,6 +77,118 @@ fn toggling_tiling_preserves_virtual_workspace_navigation() {
 }
 
 #[test]
+fn display_removal_remap_preserves_surviving_space_workspaces() {
+    // Replicates a display-sleep removal: the built-in display's space is
+    // folded into the surviving external one. The survivor's workspace
+    // structure must win; the removed space's windows join by ordinal
+    // instead of everything collapsing onto one workspace.
+    let (mut apps, mut reactor) = test_context_with_workspace_count(3);
+    let ext_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let builtin_screen = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let ext = SpaceId::new(3);
+    let builtin = SpaceId::new(556);
+
+    reactor.handle_event(space_state_event(
+        vec![ext_screen, builtin_screen],
+        vec![Some(ext), Some(builtin)],
+    ));
+    apps.make_app_and_settle(&mut reactor, 1, vec![
+        make_window_info(
+            CGRect::new(CGPoint::new(100., 100.), CGSize::new(500., 500.)),
+            None,
+            "One",
+            None,
+        ),
+        make_window_info(
+            CGRect::new(CGPoint::new(200., 200.), CGSize::new(500., 500.)),
+            None,
+            "Two",
+            None,
+        ),
+        make_window_info(
+            CGRect::new(CGPoint::new(1100., 100.), CGSize::new(500., 500.)),
+            None,
+            "Three",
+            None,
+        ),
+    ]);
+    let (w1, w2, w3) = (WindowId::new(1, 1), WindowId::new(1, 2), WindowId::new(1, 3));
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: Some(1),
+    });
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(2),
+        follow: false,
+        window_id: Some(2),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+
+    let (ws0, ws1, ws2) = (
+        reactor.test_workspace(ext, 0),
+        reactor.test_workspace(ext, 1),
+        reactor.test_workspace(ext, 2),
+    );
+    assert_eq!(reactor.test_workspace_for_window(ext, w1), Some(ws1));
+    assert_eq!(reactor.test_workspace_for_window(ext, w2), Some(ws2));
+    assert_eq!(
+        reactor.test_workspace_for_window(builtin, w3),
+        Some(reactor.test_workspace(builtin, 0))
+    );
+    let frames_before = [w1, w2, w3].map(|wid| {
+        reactor.state.windows.window(wid).unwrap().frame_monotonic
+    });
+
+    // Built-in display removed; macOS moved its window onto the external one.
+    let mut removal =
+        forwarded_space_state(make_screen_snapshots(vec![ext_screen], vec![Some(ext)]));
+    removal.display_set_changed = true;
+    removal.allow_space_remap = true;
+    removal.should_force_refresh_layout = true;
+    removal.releases_display_churn_refresh_quarantine = true;
+    removal.space_remaps = vec![(builtin, ext)];
+    for wid in [w1, w2, w3] {
+        removal
+            .active_window_spaces
+            .insert(reactor.test_window_server_id(wid), ext);
+    }
+    reactor.handle_event(Event::SpaceStateChanged(removal));
+    apps.simulate_until_quiet(&mut reactor);
+
+    for (wid, expected) in [(w1, ws1), (w2, ws2), (w3, ws0)] {
+        assert_eq!(
+            reactor.test_workspace_for_window(ext, wid),
+            Some(expected),
+            "window {wid:?} must keep its workspace ordinal after the removal remap"
+        );
+    }
+    // Adopted window: its pre-sleep frame is off-screen on the survivor, so
+    // it is recentered with its size preserved instead of left off-screen.
+    assert_eq!(
+        reactor.state.windows.window(w3).unwrap().frame_monotonic,
+        CGRect::new(CGPoint::new(0., 0.), frames_before[2].size),
+        "adopted window must land visibly on the surviving display"
+    );
+    for wid in [w1, w2] {
+        // Parked corners legitimately flip when the neighboring display
+        // vanishes; what matters is the window stays parked on its own
+        // workspace instead of stacking onto the active one.
+        let frame = reactor.state.windows.window(wid).unwrap().frame_monotonic;
+        assert!(
+            reactor
+                .layout_manager
+                .layout_engine
+                .virtual_workspace_manager()
+                .is_hidden_position_multi(&ext_screen, &frame, None, &[ext_screen]),
+            "window {wid:?} must stay parked, got {frame:?}"
+        );
+    }
+}
+
+#[test]
 fn churn_snapshot_omitting_parked_window_preserves_workspace_assignment() {
     // Display sleep/wake ends with a churn-completion snapshot taken while
     // the window server is still waking, so it can omit windows. Omitted

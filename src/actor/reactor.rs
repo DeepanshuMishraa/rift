@@ -2592,7 +2592,10 @@ impl Reactor {
                 true,
             );
             window_server::move_windows_to_space(&windows, *space);
-            self.layout_manager.layout_engine.remap_space(
+            // Churn remaps must never destroy the surviving space: when both
+            // sides hold windows the survivor's workspaces win and the removed
+            // space's windows are adopted by ordinal.
+            self.layout_manager.layout_engine.remap_space_for_churn(
                 &mut self.state.windows,
                 *previous_space,
                 *space,

@@ -424,6 +424,77 @@ impl WorkspaceStore {
         window_store.remap_space(old_space, new_space);
     }
 
+    /// Retire a removed display's workspace structures without touching any
+    /// other space. Used when the removed space holds no windows.
+    pub fn retire_space(&mut self, space: SpaceId) {
+        if let Some(ids) = self.workspaces_by_space.remove(&space) {
+            for workspace_id in ids {
+                self.workspaces.remove(workspace_id);
+            }
+        }
+        self.active_workspace_per_space.remove(&space);
+    }
+
+    /// Fold a removed display's space into a live one during display churn.
+    ///
+    /// Unlike [`remap_space`](Self::remap_space), the target's workspace
+    /// structure is authoritative: windows assigned to the old space are
+    /// adopted by workspace ordinal into the target's workspaces and the old
+    /// structures are retired. Migrating the old structure instead (as
+    /// `remap_space` does) would delete the surviving display's workspaces
+    /// and drop all of its window assignments.
+    ///
+    /// Returns the adopted `(window, target_workspace)` pairs so callers can
+    /// fix up layout trees. Returns an empty vec when the target has no
+    /// workspaces; callers should use `remap_space` then.
+    pub fn merge_space_for_churn(
+        &mut self,
+        window_store: &mut WindowStore,
+        old_space: SpaceId,
+        new_space: SpaceId,
+    ) -> Vec<(WindowId, VirtualWorkspaceId)> {
+        if old_space == new_space {
+            return Vec::new();
+        }
+        let target_ids = self.ordered_workspace_ids(new_space);
+        if target_ids.is_empty() {
+            return Vec::new();
+        }
+        let fallback = self
+            .active_workspace(new_space)
+            .filter(|active| target_ids.contains(active))
+            .or_else(|| target_ids.first().copied());
+        let Some(fallback) = fallback else {
+            return Vec::new();
+        };
+
+        let old_ids = self.ordered_workspace_ids(old_space);
+        let old_windows: Vec<(WindowId, usize)> = window_store
+            .iter_workspace_assignments()
+            .filter_map(|(window_id, assignment)| {
+                (assignment.space == old_space).then(|| {
+                    let index = old_ids
+                        .iter()
+                        .position(|workspace_id| *workspace_id == assignment.workspace_id)
+                        .unwrap_or(0);
+                    (window_id, index)
+                })
+            })
+            .collect();
+        let mut adopted = Vec::with_capacity(old_windows.len());
+        for (window_id, source_index) in old_windows {
+            let target_workspace = target_ids.get(source_index).copied().unwrap_or(fallback);
+            if self.assign_window_to_workspace(window_store, new_space, window_id, target_workspace)
+            {
+                adopted.push((window_id, target_workspace));
+            }
+        }
+
+        window_store.remap_native_space_records(old_space, new_space);
+        self.retire_space(old_space);
+        adopted
+    }
+
     pub fn create_workspace(
         &mut self,
         space: SpaceId,

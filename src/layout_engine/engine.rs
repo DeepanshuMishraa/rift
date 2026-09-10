@@ -1353,6 +1353,100 @@ impl LayoutEngine {
             .collect();
         self.virtual_workspace_manager.remap_space(window_store, old_space, new_space);
 
+        self.update_display_maps_for_remap(old_space, new_space);
+    }
+
+    /// Display-churn space remap that never destroys a live target space.
+    ///
+    /// When a display is removed, its space folds into a surviving one. If
+    /// that survivor already holds windows, its workspace structure wins and
+    /// the removed space's windows are adopted by workspace ordinal;
+    /// migrating the removed structure instead would delete the survivor's
+    /// workspaces and drop all of its window assignments. Empty sides fall
+    /// back to plain [`remap_space`](Self::remap_space).
+    pub fn remap_space_for_churn(
+        &mut self,
+        window_store: &mut WindowStore,
+        old_space: SpaceId,
+        new_space: SpaceId,
+    ) {
+        if old_space == new_space {
+            return;
+        }
+        let old_live = window_store.has_workspace_assignments_in_space(old_space);
+        let new_live = window_store.has_workspace_assignments_in_space(new_space);
+        if !old_live {
+            // Nothing to migrate. Retire the removed space without touching
+            // the survivor.
+            self.virtual_workspace_manager.retire_space(old_space);
+            self.workspace_layouts.drop_space(old_space);
+            self.update_display_maps_for_remap(old_space, new_space);
+            return;
+        }
+        if !new_live {
+            self.remap_space(window_store, old_space, new_space);
+            return;
+        }
+
+        let adopted =
+            self.virtual_workspace_manager
+                .merge_space_for_churn(window_store, old_space, new_space);
+        if adopted.is_empty() {
+            self.remap_space(window_store, old_space, new_space);
+            return;
+        }
+
+        // Re-home adopted windows into the surviving layout trees (paused
+        // restore reads tree membership, so they must be present).
+        for &(window_id, target_workspace) in &adopted {
+            if self.floating.is_floating(window_id) {
+                self.floating.add_active(new_space, window_id.pid, window_id);
+            } else if let Some(layout) =
+                self.workspace_layouts.active(new_space, target_workspace)
+            {
+                if !self.workspace_tree(target_workspace).contains_window(layout, window_id) {
+                    self.workspace_tree_mut(target_workspace)
+                        .add_window_after_selection(layout, window_id);
+                }
+            }
+        }
+
+        // Migrate per-window keyed state onto the adopted workspaces. The
+        // retired structures are gone, so their entries are dropped; surviving
+        // target entries are never clobbered.
+        let adopted_map: HashMap<WindowId, VirtualWorkspaceId> =
+            adopted.into_iter().collect();
+        self.floating_positions
+            .migrate_space_for_churn(old_space, new_space, &adopted_map);
+        self.remap_paused_state_for_churn(old_space, new_space);
+        self.floating.remap_space(old_space, new_space);
+        self.workspace_layouts.drop_space(old_space);
+        self.update_display_maps_for_remap(old_space, new_space);
+    }
+
+    /// Blind old-to-new rewrite of paused restore state, preferring migrated
+    /// entries over orphaned target ones (an adopted window cannot have a
+    /// fresh target entry, so any pre-existing one is stale).
+    fn remap_paused_state_for_churn(&mut self, old_space: SpaceId, new_space: SpaceId) {
+        let paused_positions = std::mem::take(&mut self.paused_tiled_positions);
+        let (migrated, rest): (Vec<_>, Vec<_>) = paused_positions
+            .into_iter()
+            .partition(|((space, _), _)| *space == old_space);
+        self.paused_tiled_positions = rest.into_iter().collect();
+        for ((_, window), frame) in migrated {
+            self.paused_tiled_positions.insert((new_space, window), frame);
+        }
+        let paused_guards = std::mem::take(&mut self.paused_restore_guards);
+        let (migrated, rest): (Vec<_>, Vec<_>) = paused_guards
+            .into_iter()
+            .partition(|((space, _), _)| *space == old_space);
+        self.paused_restore_guards = rest.into_iter().collect();
+        for ((_, window), at) in migrated {
+            self.paused_restore_guards.insert((new_space, window), at);
+        }
+    }
+
+    fn update_display_maps_for_remap(&mut self, old_space: SpaceId, new_space: SpaceId) {
         if let Some(uuid) = self.space_display_map.remove(&old_space) {
             self.space_display_map.insert(new_space, uuid);
         }

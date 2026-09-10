@@ -926,6 +926,17 @@ impl WindowStore {
             }
         }
 
+        self.remap_native_space_records(old_space, new_space);
+    }
+
+    /// Follow native/window-server space records to a surviving space without
+    /// touching workspace assignments. Churn merges re-home assignments by
+    /// workspace ordinal instead of blindly rewriting them.
+    pub fn remap_native_space_records(&mut self, old_space: SpaceId, new_space: SpaceId) {
+        if old_space == new_space {
+            return;
+        }
+
         for record in self.windows.values_mut() {
             if let Some(assignment) = record.workspace.as_mut()
                 && assignment.space == old_space
