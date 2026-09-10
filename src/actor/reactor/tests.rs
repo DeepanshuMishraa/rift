@@ -77,6 +77,62 @@ fn toggling_tiling_preserves_virtual_workspace_navigation() {
 }
 
 #[test]
+fn churn_snapshot_omitting_parked_window_preserves_workspace_assignment() {
+    // Display sleep/wake ends with a churn-completion snapshot taken while
+    // the window server is still waking, so it can omit windows. Omitted
+    // parked windows must keep their workspace assignment instead of being
+    // dropped and re-discovered onto the active workspace.
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let kept = WindowId::new(1, 1);
+    let parked = WindowId::new(1, 2);
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: Some(2),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+
+    let secondary = reactor.test_workspace(space, 1);
+    assert_eq!(reactor.test_workspace_for_window(space, parked), Some(secondary));
+    let parked_frame = reactor.state.windows.window(parked).unwrap().frame_monotonic;
+    assert!(
+        reactor
+            .layout_manager
+            .layout_engine
+            .virtual_workspace_manager()
+            .is_hidden_position_multi(&screen, &parked_frame, None, &[screen]),
+        "inactive-workspace window should start parked: {parked_frame:?}"
+    );
+
+    // Wake churn-completion snapshot: partial, omits the parked window.
+    let mut churn = forwarded_space_state(make_screen_snapshots(vec![screen], vec![Some(space)]));
+    churn.display_set_changed = true;
+    churn.releases_display_churn_refresh_quarantine = true;
+    churn
+        .active_window_spaces
+        .insert(reactor.test_window_server_id(kept), space);
+    reactor.handle_event(Event::SpaceStateChanged(churn));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.test_workspace_for_window(space, parked),
+        Some(secondary),
+        "churn snapshot must not erase a parked workspace assignment"
+    );
+    assert_eq!(
+        reactor.state.windows.window(parked).unwrap().frame_monotonic,
+        parked_frame,
+        "parked window must stay parked instead of stacking onto the active workspace"
+    );
+}
+
+#[test]
 fn paused_tiling_survives_display_sleep_wake_cycle() {
     // Sleep removes the display, so the window server reports the ACTIVE
     // workspace window as disappeared; on wake macOS dumps it at a

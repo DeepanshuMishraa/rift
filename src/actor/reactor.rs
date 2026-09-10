@@ -2521,6 +2521,7 @@ impl Reactor {
             display_set_changed,
             should_force_refresh_layout,
             releases_lifecycle_refresh_quarantine,
+            releases_display_churn_refresh_quarantine,
             resized_spaces,
             topology_window_delta,
             active_window_spaces,
@@ -2626,7 +2627,17 @@ impl Reactor {
             outcome.absorb(self.apply_topology_window_delta(delta));
         }
         let active_windows = self.authoritative_active_space_windows();
-        self.finalize_space_change(&spaces, active_windows, releases_lifecycle_refresh_quarantine);
+        // Window omissions from a display-instability snapshot are partial
+        // post-wake reads, not genuine closes. Preserve workspace assignments
+        // through them (as the wake-release snapshot already does) so omitted
+        // windows are not dropped and later re-discovered onto the active
+        // workspace. Genuine closes still clean up on the next stable
+        // snapshot and via their AX destroyed events.
+        let preserve_missing_assignments = releases_lifecycle_refresh_quarantine
+            || releases_display_churn_refresh_quarantine
+            || display_set_changed
+            || !space_remaps.is_empty();
+        self.finalize_space_change(&spaces, active_windows, preserve_missing_assignments);
         self.try_apply_pending_space_change();
         if should_force_refresh_layout {
             outcome = outcome.with_force_window_refresh().with_arrange_passes(1);
