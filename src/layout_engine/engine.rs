@@ -2312,26 +2312,60 @@ impl LayoutEngine {
         if let Some(active_workspace_id) = self.virtual_workspace_manager.active_workspace(space) {
             if let Some(layout) = self.workspace_layouts.active(space, active_workspace_id) {
                 let tiled_positions = if preserve_tiled_frames {
-                    self.workspace_tree(active_workspace_id)
-                        .visible_windows_in_layout(layout)
-                        .into_iter()
-                        .filter_map(|wid| {
-                            let frame = self
-                                .paused_tiled_positions
-                                .get(&(space, wid))
-                                .copied()
-                                .or_else(|| get_window_frame(wid));
-                            tracing::trace!(
-                                ?space,
-                                ?wid,
-                                ?frame,
-                                paused_stored =
-                                    self.paused_tiled_positions.contains_key(&(space, wid)),
-                                "preserve_tiled_frames: restore position for window"
-                            );
-                            frame.map(|frame| (wid, frame))
-                        })
-                        .collect()
+                    let visible_windows: Vec<WindowId> = self
+                        .workspace_tree(active_workspace_id)
+                        .visible_windows_in_layout(layout);
+                    let mut restored = Vec::with_capacity(visible_windows.len());
+                    for wid in visible_windows {
+                        let cached =
+                            self.paused_tiled_positions.get(&(space, wid)).copied();
+                        let live = get_window_frame(wid);
+                        let bundle_id = self.get_app_bundle_id_for_window(wid);
+                        // An active-workspace window must never resolve to the
+                        // off-screen parking frame. After sleep/wake macOS can
+                        // move windows itself (or the stored frame is already a
+                        // parking acknowledgement), so filter hidden frames and
+                        // fall back to a centered rect, mirroring
+                        // `ensure_visible_floating` below.
+                        let cached_visible = cached.filter(|frame| {
+                            !self.virtual_workspace_manager.is_hidden_position_multi(
+                                &screen,
+                                frame,
+                                bundle_id.as_deref(),
+                                all_screens,
+                            )
+                        });
+                        let live_visible = live.filter(|frame| {
+                            !self.virtual_workspace_manager.is_hidden_position_multi(
+                                &screen,
+                                frame,
+                                bundle_id.as_deref(),
+                                all_screens,
+                            )
+                        });
+                        let frame = cached_visible.or(live_visible).unwrap_or_else(|| {
+                            let size = live
+                                .or(cached)
+                                .map(|frame| frame.size)
+                                .unwrap_or_else(|| CGSize::new(500.0, 500.0));
+                            center_rect(size)
+                        });
+                        // Heal the restore cache so a parked/corrupted frame
+                        // does not stick across arranges: only visible frames
+                        // are remembered.
+                        if cached_visible.is_none() {
+                            self.paused_tiled_positions.insert((space, wid), frame);
+                        }
+                        tracing::trace!(
+                            ?space,
+                            ?wid,
+                            ?frame,
+                            paused_stored = cached.is_some(),
+                            "preserve_tiled_frames: restore position for window"
+                        );
+                        restored.push((wid, frame));
+                    }
+                    restored
                 } else {
                     self.workspace_tree(active_workspace_id).calculate_layout(
                         layout,
@@ -4108,6 +4142,73 @@ mod tests {
         assert!(locked_frame.origin.y >= screen.origin.y - epsilon);
         assert!(locked_frame.origin.x + locked_frame.size.width <= max_x);
         assert!(locked_frame.origin.y + locked_frame.size.height <= max_y);
+    }
+
+    #[test]
+    fn paused_tiling_restore_heals_parked_frame_after_sleep_wake() {
+        // After sleep/wake macOS can move windows itself and the stored live
+        // frame can be the off-screen parking frame. An active-workspace
+        // window in paused (float) mode must be recentered, not re-parked.
+        let mut window_store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(95);
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1470.0, 956.0));
+        let pid: pid_t = 7777;
+        let window = WindowId::new(pid, 1);
+
+        let _ =
+            engine.handle_event(&mut window_store, LayoutEvent::SpaceExposed(space, screen.size));
+        let _ = engine.handle_event(
+            &mut window_store,
+            LayoutEvent::windows_on_screen_updated(
+                space,
+                pid,
+                vec![(window, None, None, None, true, CGSize::new(706.0, 914.0), None, None)],
+                None,
+            ),
+        );
+
+        let parked = CGRect::new(CGPoint::new(1469.0, 924.0), CGSize::new(706.0, 914.0));
+        let gaps = engine.layout_settings.gaps.effective_for_display(None);
+        let layout = |engine: &mut LayoutEngine, frame: Option<CGRect>| {
+            engine.calculate_layout_with_virtual_workspaces_preserving_tiling(
+                &window_store,
+                space,
+                screen,
+                &gaps,
+                0.0,
+                Default::default(),
+                Default::default(),
+                |_| frame,
+                &[screen],
+                true,
+            )
+            .into_iter()
+            .collect::<HashMap<WindowId, CGRect>>()
+        };
+
+        let frames = layout(&mut engine, Some(parked));
+        let frame =
+            frames.get(&window).copied().expect("active window should have a restored frame");
+        assert!(
+            !engine.virtual_workspace_manager().is_hidden_position_multi(
+                &screen,
+                &frame,
+                None,
+                &[screen]
+            ),
+            "paused restore must not park an active-workspace window: {frame:?}"
+        );
+        assert_eq!(frame.size, CGSize::new(706.0, 914.0));
+        assert_eq!(
+            frame.origin,
+            CGPoint::new(screen.mid().x - 706.0 / 2.0, screen.mid().y - 914.0 / 2.0)
+        );
+
+        // The restore cache is healed, so a later arrange with no live frame
+        // still restores the visible position instead of the parking frame.
+        let frames = layout(&mut engine, None);
+        assert_eq!(frames.get(&window), Some(&frame));
     }
 
     #[test]
