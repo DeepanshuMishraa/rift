@@ -598,7 +598,7 @@ impl Reactor {
 
     fn refresh_window_server_snapshot_for_active_spaces(&mut self) {
         let active_windows = self.authoritative_active_space_windows();
-        self.reconcile_authoritative_active_window_snapshot(active_windows, self.tiling_paused);
+        self.reconcile_authoritative_active_window_snapshot(active_windows, true);
     }
 
     fn authoritative_active_space_windows(&self) -> Vec<(WindowServerId, Option<SpaceId>)> {
@@ -674,7 +674,7 @@ impl Reactor {
     fn remove_windows_missing_from_active_space_snapshot(
         &mut self,
         previously_visible_wsids: Vec<WindowServerId>,
-        preserve_assignments: bool,
+        preserve_missing_assignments: bool,
     ) {
         for wsid in previously_visible_wsids {
             if self.state.windows.is_window_visible(wsid) {
@@ -711,20 +711,27 @@ impl Reactor {
                 continue;
             }
 
-            if preserve_assignments {
+            if preserve_missing_assignments {
+                // Omission from an ambient snapshot is never evidence that a
+                // window died: enumeration gaps happen on every display
+                // dim/sleep and while the window server is waking (dozens of
+                // consecutive snapshots). Genuine closes always arrive as AX
+                // destroyed events through their own path. Dropping the
+                // assignment here is what collapsed every workspace onto the
+                // active one after sleep, so the assignment is kept.
                 debug!(
                     ?wid,
                     ?wsid,
-                    "Preserving workspace assignment omitted from partial authoritative snapshot"
+                    "Preserving workspace assignment omitted from authoritative snapshot"
                 );
                 continue;
             }
 
-            // If the authoritative active-space snapshot no longer includes a
-            // previously visible window and WindowServer cannot confirm a new
-            // native space for it, drop the stale origin-space ownership. Keeping
-            // the old assignment lets later discovery/MC refresh rebuild the
-            // origin layout from stale workspace state.
+            // The caller holds a fresh explicit enumeration (Mission Control
+            // recovery), not an ambient snapshot, so a missing window really
+            // moved away: drop the stale origin-space ownership. Keeping the
+            // old assignment would let later discovery rebuild the origin
+            // layout from stale workspace state.
             self.state.windows.set_window_server_space(wsid, None);
             self.send_layout_event(LayoutEvent::WindowRemoved(wid));
         }
@@ -2334,7 +2341,6 @@ impl Reactor {
         &mut self,
         spaces: &[Option<SpaceId>],
         active_windows: Vec<(WindowServerId, Option<SpaceId>)>,
-        preserve_missing_assignments: bool,
     ) {
         self.refocus_manager.stale_cleanup_state = if spaces.iter().all(|space| space.is_none()) {
             StaleCleanupState::Suppressed
@@ -2347,10 +2353,7 @@ impl Reactor {
                 self.send_layout_event(LayoutEvent::WindowFocused(space, main_window));
             }
         }
-        self.reconcile_authoritative_active_window_snapshot(
-            active_windows,
-            preserve_missing_assignments,
-        );
+        self.reconcile_authoritative_active_window_snapshot(active_windows, true);
         self.check_for_new_windows();
 
         if let Some(space) = self.workspace_command_space() {
@@ -2520,8 +2523,8 @@ impl Reactor {
             space_remaps,
             display_set_changed,
             should_force_refresh_layout,
-            releases_lifecycle_refresh_quarantine,
-            releases_display_churn_refresh_quarantine,
+            releases_lifecycle_refresh_quarantine: _,
+            releases_display_churn_refresh_quarantine: _,
             resized_spaces,
             topology_window_delta,
             active_window_spaces,
@@ -2630,17 +2633,7 @@ impl Reactor {
             outcome.absorb(self.apply_topology_window_delta(delta));
         }
         let active_windows = self.authoritative_active_space_windows();
-        // Window omissions from a display-instability snapshot are partial
-        // post-wake reads, not genuine closes. Preserve workspace assignments
-        // through them (as the wake-release snapshot already does) so omitted
-        // windows are not dropped and later re-discovered onto the active
-        // workspace. Genuine closes still clean up on the next stable
-        // snapshot and via their AX destroyed events.
-        let preserve_missing_assignments = releases_lifecycle_refresh_quarantine
-            || releases_display_churn_refresh_quarantine
-            || display_set_changed
-            || !space_remaps.is_empty();
-        self.finalize_space_change(&spaces, active_windows, preserve_missing_assignments);
+        self.finalize_space_change(&spaces, active_windows);
         self.try_apply_pending_space_change();
         if should_force_refresh_layout {
             outcome = outcome.with_force_window_refresh().with_arrange_passes(1);

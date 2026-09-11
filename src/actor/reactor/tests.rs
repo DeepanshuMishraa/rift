@@ -189,6 +189,60 @@ fn display_removal_remap_preserves_surviving_space_workspaces() {
 }
 
 #[test]
+fn quiet_snapshot_omitting_parked_window_preserves_workspace_assignment() {
+    // Screen dimming makes windows vanish from enumeration with no display
+    // churn flags at all. Omission alone must never erase an assignment:
+    // genuine closes always arrive as AX destroyed events.
+    let (mut apps, mut reactor) = test_context_with_workspace_count(2);
+    let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let space = SpaceId::new(1);
+    apps.make_app_and_settle_on_screen(&mut reactor, screen, space, 1, make_windows(2));
+    let kept = WindowId::new(1, 1);
+    let parked = WindowId::new(1, 2);
+
+    reactor.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: Some(2),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+
+    let secondary = reactor.test_workspace(space, 1);
+    assert_eq!(reactor.test_workspace_for_window(space, parked), Some(secondary));
+
+    // Quiet snapshot (no churn flags) omitting the dimmed parked window.
+    let mut quiet = forwarded_space_state(make_screen_snapshots(vec![screen], vec![Some(space)]));
+    quiet
+        .active_window_spaces
+        .insert(reactor.test_window_server_id(kept), space);
+    reactor.handle_event(Event::SpaceStateChanged(quiet));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.test_workspace_for_window(space, parked),
+        Some(secondary),
+        "omission without churn must not erase a parked workspace assignment"
+    );
+
+    // Omission must never drop assignments no matter how long it lasts.
+    for _ in 0..5 {
+        let mut quiet =
+            forwarded_space_state(make_screen_snapshots(vec![screen], vec![Some(space)]));
+        quiet
+            .active_window_spaces
+            .insert(reactor.test_window_server_id(kept), space);
+        reactor.handle_event(Event::SpaceStateChanged(quiet));
+    }
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(
+        reactor.test_workspace_for_window(space, parked),
+        Some(secondary),
+        "repeated omission must not erase a parked workspace assignment"
+    );
+}
+
+#[test]
 fn churn_snapshot_omitting_parked_window_preserves_workspace_assignment() {
     // Display sleep/wake ends with a churn-completion snapshot taken while
     // the window server is still waking, so it can omit windows. Omitted
@@ -3758,10 +3812,10 @@ fn authoritative_active_window_snapshot_reassigns_missing_window_to_inactive_spa
         Some(vec![inactive_space.get()]),
     );
 
-    reactor.reconcile_authoritative_active_window_snapshot(
-        vec![(retained_wsid, Some(active_space))],
-        false,
-    );
+    reactor.reconcile_authoritative_active_window_snapshot(vec![(
+        retained_wsid,
+        Some(active_space),
+    )], false);
 
     crate::sys::window_server::set_window_spaces_override(moved_wsid, None);
 
