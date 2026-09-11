@@ -1015,14 +1015,10 @@ impl WorkspaceStore {
             return Some(existing_assignment);
         }
 
-        // Treat an empty, newly initialized target space as a transient native-space-id churn
-        // candidate and preserve workspace ownership by ordinal. Once the target space already
-        // has assignments, prefer the normal resolution path so real cross-space moves still
-        // follow the destination space.
-        if window_store.has_workspace_assignments_in_space(space) {
-            return None;
-        }
-
+        // Cross-space adoption (user moves and display-sleep gathers alike):
+        // keep the workspace ordinal so gathered windows do not all collapse
+        // onto the destination's active workspace. Unmappable ordinals fall
+        // back to normal resolution below.
         let source_index = self
             .ordered_workspace_ids(existing_assignment.space)
             .iter()
@@ -1457,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_preserve_workspace_ordinal_when_target_space_already_has_assignments() {
+    fn preserves_workspace_ordinal_when_target_space_already_has_assignments() {
         let mut window_store = WindowStore::default();
         let mut settings = VirtualWorkspaceSettings::default();
         settings.default_workspace_count = 3;
@@ -1495,12 +1491,12 @@ mod tests {
             None,
         );
 
-        assert_eq!(assignment.workspace_id, new_workspaces[0].0);
+        assert_eq!(assignment.workspace_id, new_workspaces[2].0);
         assert_eq!(
             manager.workspace_info_for_window_any(&window_store, moved_window),
             Some(WindowWorkspaceInfo {
                 space: new_space,
-                workspace_id: new_workspaces[0].0,
+                workspace_id: new_workspaces[2].0,
             })
         );
     }

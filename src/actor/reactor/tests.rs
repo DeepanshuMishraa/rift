@@ -189,6 +189,55 @@ fn display_removal_remap_preserves_surviving_space_workspaces() {
 }
 
 #[test]
+fn discovery_adoption_after_external_gather_preserves_workspace_ordinal() {
+    // macOS gathers windows onto the awake display during dim/sleep and live
+    // queries confirm the new native space. Rediscovery must adopt the window
+    // into the same workspace ordinal, not the destination's active workspace.
+    let (mut apps, mut reactor) = test_context_with_workspace_count(3);
+    let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+    let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+    let space1 = SpaceId::new(1);
+    let space2 = SpaceId::new(2);
+    reactor.handle_event(space_state_event(
+        vec![screen1, screen2],
+        vec![Some(space1), Some(space2)],
+    ));
+    apps.make_app_and_settle(&mut reactor, 1, make_windows(1));
+    apps.make_app_and_settle(&mut reactor, 2, vec![make_window_info(
+        CGRect::new(CGPoint::new(1100., 100.), CGSize::new(50., 50.)),
+        None,
+        "Other",
+        None,
+    )]);
+    let wid = WindowId::new(1, 1);
+    let wsid = reactor.test_window_server_id(wid);
+
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(2),
+        follow: false,
+        window_id: Some(1),
+    });
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(
+        reactor.test_workspace_for_window(space1, wid),
+        Some(reactor.test_workspace(space1, 2))
+    );
+
+    // Live queries confirm macOS gathered the window onto the second display.
+    crate::sys::window_server::set_window_spaces_override(wsid, Some(vec![space2.get()]));
+    reactor.discover_test_windows(1, vec![], vec![wid]);
+    apps.simulate_until_quiet(&mut reactor);
+    crate::sys::window_server::set_window_spaces_override(wsid, None);
+
+    assert_eq!(reactor.assigned_space_for_window_id(wid), Some(space2));
+    assert_eq!(
+        reactor.test_workspace_for_window(space2, wid),
+        Some(reactor.test_workspace(space2, 2)),
+        "gathered window must keep its workspace ordinal instead of landing on the active workspace"
+    );
+}
+
+#[test]
 fn quiet_snapshot_omitting_parked_window_preserves_workspace_assignment() {
     // Screen dimming makes windows vanish from enumeration with no display
     // churn flags at all. Omission alone must never erase an assignment:
