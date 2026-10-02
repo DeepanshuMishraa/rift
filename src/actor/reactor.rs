@@ -1047,27 +1047,58 @@ impl Reactor {
             Event::SystemWillSleep => {
                 self.refresh_quarantine_manager.sleeping = true;
                 self.refresh_quarantine_manager.awaiting_post_wake_snapshot = false;
+                // Freeze pre-sleep paused restore caches BEFORE macOS dumps
+                // parked windows on-screen. Dumped live frames arrive as
+                // WindowFrameChanged/AX discovery while asleep; without this
+                // guard they would overwrite the restore cache and the next
+                // arrange would keep the collapsed single-workspace layout.
+                // The wake path re-guards and re-parks from the shielded cache.
+                if self.tiling_paused {
+                    self.layout_manager.layout_engine.guard_all_paused_restore_positions();
+                }
                 return Ok(EventOutcome::default());
             }
             Event::SystemWoke => {
                 self.refresh_quarantine_manager.sleeping = true;
                 self.refresh_quarantine_manager.awaiting_post_wake_snapshot = true;
                 self.refresh_quarantine_manager.suppress_auto_workspace_switch_until_input = true;
-                let outcome = system_workflow::handle_system_woke()?;
+                // Display dim/wake (now also routed here via
+                // NSWorkspaceScreensDidWakeNotification) dumps parked
+                // paused-workspace windows on-screen with no destroy/appear
+                // cycle, so per-window removal guards never fire. Shield the
+                // whole pre-sleep restore cache until live frames converge.
+                let mut outcome = system_workflow::handle_system_woke()?;
+                if self.tiling_paused {
+                    self.layout_manager.layout_engine.guard_all_paused_restore_positions();
+                    // Immediately re-park dumped windows from the shielded
+                    // cache. Without this the post-wake snapshot path may be
+                    // a no-op (identical topology) and the dumped windows
+                    // stay stacked on the active workspace until the user
+                    // manually switches workspaces.
+                    outcome = outcome.with_arrange_passes(1);
+                }
                 self.defer_visible_refresh(true);
                 return Ok(outcome);
             }
             Event::SessionDidResignActive => {
                 self.refresh_quarantine_manager.session_inactive = true;
                 self.refresh_quarantine_manager.awaiting_post_session_snapshot = false;
+                if self.tiling_paused {
+                    self.layout_manager.layout_engine.guard_all_paused_restore_positions();
+                }
                 return Ok(EventOutcome::default());
             }
             Event::SessionDidBecomeActive => {
                 self.refresh_quarantine_manager.session_inactive = true;
                 self.refresh_quarantine_manager.awaiting_post_session_snapshot = true;
                 self.refresh_quarantine_manager.suppress_auto_workspace_switch_until_input = true;
+                let mut outcome = EventOutcome::default();
+                if self.tiling_paused {
+                    self.layout_manager.layout_engine.guard_all_paused_restore_positions();
+                    outcome = outcome.with_arrange_passes(1);
+                }
                 self.defer_visible_refresh(true);
-                return Ok(EventOutcome::default());
+                return Ok(outcome);
             }
             Event::DisplayChurnBegin => {
                 self.refresh_quarantine_manager.display_churn_active = true;

@@ -363,6 +363,26 @@ impl NotificationCenter {
                 workspace_center,
                 workspace,
             );
+            // Display dim/sleep (inactivity, quick keyboard wake) does NOT
+            // send system WillSleep/DidWake. Without these, parked
+            // paused-workspace windows dumped on-screen by macOS are never
+            // refreshed/re-parked and appear collapsed onto one workspace.
+            workspace_center.addObserver_selector_name_object(
+                &handler,
+                sel!(recvSleepEvent:),
+                Some(&NSString::from_str(
+                    "NSWorkspaceScreensDidSleepNotification",
+                )),
+                Some(workspace),
+            );
+            workspace_center.addObserver_selector_name_object(
+                &handler,
+                sel!(recvWakeEvent:),
+                Some(&NSString::from_str(
+                    "NSWorkspaceScreensDidWakeNotification",
+                )),
+                Some(workspace),
+            );
             register_unsafe(
                 sel!(recvAppEvent:),
                 NSWorkspaceDidActivateApplicationNotification,

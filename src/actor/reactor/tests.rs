@@ -4877,6 +4877,40 @@ fn wake_gate_waits_for_fresh_space_snapshot_before_refresh() {
 }
 
 #[test]
+fn paused_sleep_wake_guards_cache_and_reparks_while_unpaused_wake_stays_quiet() {
+    // Display dim/sleep dumps parked paused-workspace windows on-screen with
+    // no destroy/appear cycle. Sleep must freeze the restore cache (see the
+    // engine-level guard test) and wake must immediately re-park from it; an
+    // unpaused wake must not force extra arranges.
+    let mut paused = test_reactor_with_workspace_count(2);
+    paused.handle_event(Event::Command(Command::Reactor(ReactorCommand::ToggleTiling)));
+    assert!(paused.query_metrics()["tiling_paused"].as_bool().unwrap());
+
+    let sleep_outcome = paused.dispatch_workflow(Event::SystemWillSleep).unwrap();
+    assert!(!sleep_outcome.arrange.requested);
+    let wake_outcome = paused.dispatch_workflow(Event::SystemWoke).unwrap();
+    assert!(
+        wake_outcome.arrange.requested,
+        "paused wake must re-park dumped windows from the shielded cache"
+    );
+
+    let session_outcome = paused.dispatch_workflow(Event::SessionDidBecomeActive).unwrap();
+    assert!(
+        session_outcome.arrange.requested,
+        "paused unlock must re-park dumped windows from the shielded cache"
+    );
+
+    let mut unpaused = test_reactor_with_workspace_count(2);
+    let wake_outcome = unpaused.dispatch_workflow(Event::SystemWoke).unwrap();
+    assert!(
+        !wake_outcome.arrange.requested,
+        "unpaused wake must not force extra arranges"
+    );
+    let session_outcome = unpaused.dispatch_workflow(Event::SessionDidBecomeActive).unwrap();
+    assert!(!session_outcome.arrange.requested);
+}
+
+#[test]
 fn partial_post_wake_snapshot_preserves_manual_workspace_assignment() {
     let (mut apps, mut reactor) = test_context_with_workspace_count(2);
     let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));

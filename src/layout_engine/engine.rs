@@ -3408,6 +3408,18 @@ impl LayoutEngine {
         }
     }
 
+    /// Shield every remembered paused position from post-wake live frames.
+    /// Display dim/wake dumps parked windows on-screen without any
+    /// destroy/appear cycle, so per-window removal guards never fire. Without
+    /// this, the dumped on-screen frames would overwrite the pre-sleep
+    /// restore cache and the next arrange would keep the collapsed layout.
+    pub fn guard_all_paused_restore_positions(&mut self) {
+        let now = Instant::now();
+        for key in self.paused_tiled_positions.keys().copied().collect::<Vec<_>>() {
+            self.paused_restore_guards.insert(key, now);
+        }
+    }
+
     /// Drop all restore guards for a window. User-driven moves (drags,
     /// explicit display moves) make the live frame authoritative again.
     pub fn clear_paused_restore_guard(&mut self, window: WindowId) {
@@ -4408,6 +4420,72 @@ mod tests {
         // still restores the visible position instead of the parking frame.
         let frames = layout(&mut engine, None);
         assert_eq!(frames.get(&window), Some(&frame));
+    }
+
+    #[test]
+    fn sleep_guard_shields_paused_cache_from_dumped_wake_frames() {
+        // Display dim/wake dumps parked windows on-screen with no
+        // destroy/appear cycle. The sleep-time guard must freeze the
+        // pre-sleep restore cache so the dumped live frame cannot become
+        // the remembered position.
+        let mut window_store = WindowStore::default();
+        let mut engine = test_engine();
+        let space = SpaceId::new(97);
+        let screen = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1000.0, 1000.0));
+        let pid: pid_t = 8888;
+        let window = WindowId::new(pid, 1);
+
+        let workspaces = engine.virtual_workspace_manager_mut().list_workspaces(space);
+        let active = workspaces.first().map(|(id, _)| *id).expect("workspace");
+        let info = crate::sys::app::WindowInfo {
+            is_standard: true,
+            is_root: true,
+            is_minimized: false,
+            is_resizable: true,
+            min_size: None,
+            max_size: None,
+            title: "sleep-guard".to_string(),
+            frame: CGRect::new(CGPoint::new(100.0, 100.0), CGSize::new(400.0, 400.0)),
+            sys_id: None,
+            bundle_id: None,
+            path: None,
+            ax_role: None,
+            ax_subrole: None,
+        };
+        window_store.insert_window(window, crate::model::reactor::WindowState::from(info));
+        assert!(engine.virtual_workspace_manager_mut().assign_window_to_workspace(
+            &mut window_store,
+            space,
+            window,
+            active,
+        ));
+
+        let presleep = CGRect::new(CGPoint::new(100.0, 100.0), CGSize::new(400.0, 400.0));
+        engine.paused_tiled_positions.insert((space, window), presleep);
+
+        // Sleep freezes the cache before macOS dumps the window elsewhere.
+        engine.guard_all_paused_restore_positions();
+        // Dumped on-screen frame arrives while asleep.
+        let dumped = CGRect::new(CGPoint::new(300.0, 300.0), CGSize::new(400.0, 400.0));
+        if let Some(state) = window_store.window_mut(window) {
+            state.frame_monotonic = dumped;
+        }
+        engine.store_visible_paused_tiled_positions(&window_store, space, screen, &[screen]);
+        assert_eq!(
+            engine.paused_tiled_positions.get(&(space, window)),
+            Some(&presleep),
+            "guarded pre-sleep position must survive the dumped wake frame"
+        );
+
+        // Without the guard the live frame is adopted (documents why the
+        // sleep/wake guards exist).
+        engine.clear_paused_restore_guard(window);
+        engine.store_visible_paused_tiled_positions(&window_store, space, screen, &[screen]);
+        assert_eq!(
+            engine.paused_tiled_positions.get(&(space, window)),
+            Some(&dumped),
+            "unguarded refresh adopts the live frame"
+        );
     }
 
     #[test]
